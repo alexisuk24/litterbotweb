@@ -13,29 +13,25 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 
-let UNIT = store.get('lr-unit', 'lb');
-const onUnitChange = [];
+const UNIT = window.LR_UNIT === 'lb' ? 'lb' : 'kg';
 function fmtW(lb, digits) {
   if (lb == null) return '—';
   return UNIT === 'kg' ? `${(lb * 0.453592).toFixed(digits ?? 2)} kg` : `${lb.toFixed(digits ?? 2)} lb`;
 }
 const toUnit = lb => lb == null ? null : (UNIT === 'kg' ? lb * 0.453592 : lb);
-function initUnitToggle() {
-  const t = el('unitToggle');
-  if (!t) return;
-  const paint = () => t.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.unit === UNIT));
-  t.addEventListener('click', e => {
-    const u = e.target.dataset.unit;
-    if (!u || u === UNIT) return;
-    UNIT = u; store.set('lr-unit', u); paint();
-    onUnitChange.forEach(f => f());
-  });
-  paint();
-}
 
 function catColor(slot) {
   if (slot == null || slot < 0) return getComputedStyle(document.documentElement).getPropertyValue('--cat-none').trim();
   return getComputedStyle(document.documentElement).getPropertyValue(`--cat-${slot % 8}`).trim();
+}
+
+// Cat photo ringed in the cat's identity color, or the plain color dot without a photo.
+function catBadge(pet, slot, size = 18) {
+  const c = catColor(slot);
+  if (pet && pet.image) {
+    return `<img class="avatar" src="${esc(pet.image)}" alt="" loading="lazy" style="--c:${c};width:${size}px;height:${size}px" onerror="this.outerHTML='<span class=&quot;cat-dot&quot; style=&quot;background:${c}&quot;></span>'">`;
+  }
+  return `<span class="cat-dot" style="background:${c}"></span>`;
 }
 
 function fmtDur(s) {
@@ -66,4 +62,3 @@ const TYPE_LABELS = {
 };
 const typeLabel = t => TYPE_LABELS[t] || t.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
 
-document.addEventListener('DOMContentLoaded', initUnitToggle);

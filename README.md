@@ -14,15 +14,27 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   visit to watch its clip(s), see the weight/duration, and fix which cat it was.
   Visits whose weight looks like a different cat (or that have no cat) are flagged
   **Check**; the *Needs review* filter lists just those. Keyboard: `↑/↓` move,
-  `1–9` assign cat, `0` unknown, `x` ignore (e.g. a false trigger), `u` undo.
-  Corrections are stored only in the local database and never sent to Whisker.
+  `1–9` assign cat, `0` unknown, `u` undo.
+  Corrections are stored in the local database, and cat changes, "Unknown" and
+  reverts are also sent to your Whisker account (switch this off on the **Settings**
+  page), which corrects that cat's weight history
+  there too. The collector sends them within a few seconds and the page shows
+  whether Whisker accepted each one. Notes always stay local.
 - **Clips**: the calendar browser for downloaded clips.
 - **Analysis**: insights (visit-frequency changes, weight changes of 5% or more,
   cats that haven't visited, offline events), per-cat cards, visits per day, weight
   trend, time-of-day and weekday×hour patterns, clean cycles, litter/drawer levels,
   and a table of the robot's most common cat mix-ups based on your corrections.
 
-Analysis uses your corrections and leaves ignored visits out.
+Analysis uses your corrections.
+
+**Robots** has a page per robot: status, faults, waste drawer and litter levels,
+cycle counts, filter date, Wi-Fi and firmware, plus actions to start a clean cycle,
+reset the waste drawer gauge after emptying it, and remote-reset the robot (each asks
+for confirmation). Firmware updates aren't possible from here; Whisker's LR5 API has no
+endpoint for them, so use the Whisker app.
+
+**Settings** has the Whisker sync switch and the weight unit (kg by default, or lb).
 
 **Refresh** (top right on every page) runs a sync immediately instead of waiting for
 the next scheduled one. It's disabled while a sync is running and for 5 seconds after
@@ -52,7 +64,8 @@ Or as a container that polls hourly: copy this folder to
 
 Output layout: `clips/<robot name>/<robot name>_<YYYY-MM-DD>_<HH-MM-SS>.mp4`
 
-Volumes: `/clips` (videos) and `/data` (SQLite database; set `DATA_DIR` in `.env`).
+Volumes: `/clips` (videos) and `/data` (SQLite database, plus each cat's profile photo in
+`/data/pet-photos`, copied at sync because Whisker's photo links expire within hours).
 The container runs as uid/gid 1000, so both host folders must be owned by it
 (`sudo chown -R 1000:1000 <folder>`); it exits with that hint if they aren't.
 

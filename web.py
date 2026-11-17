@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import os
 import re
@@ -59,6 +60,20 @@ def local_tz() -> ZoneInfo:
 # ------------------------------------------------------------------ pages
 
 
+def weight_unit() -> str:
+    return "lb" if lr_db.get_state(db(), "weight_unit") == "lb" else "kg"
+
+
+def fmt_weight(lb: float, unit: str, signed: bool = False) -> str:
+    value = lb * 0.453592 if unit == "kg" else lb
+    return f"{value:+.2f} {unit}" if signed else f"{value:.2f} {unit}"
+
+
+@app.context_processor
+def _inject_unit():
+    return {"weight_unit": weight_unit()}
+
+
 @app.route("/")
 def index():
     if request.args.get("robot"):  # old share links pointed at the clips page on /
@@ -79,6 +94,81 @@ def events_page():
 @app.route("/analysis")
 def analysis_page():
     return render_template("analysis.html", page="analysis")
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html", page="settings")
+
+
+@app.route("/robots")
+def robots_page():
+    first = db().execute("SELECT serial FROM robots ORDER BY name LIMIT 1").fetchone()
+    if first:
+        return redirect(url_for("robot_page", serial=first["serial"]))
+    return render_template("robot.html", page="robots", serial="")
+
+
+@app.route("/robots/<serial>")
+def robot_page(serial):
+    if not db().execute("SELECT 1 FROM robots WHERE serial = ?", (serial,)).fetchone():
+        abort(404)
+    return render_template("robot.html", page="robots", serial=serial)
+
+
+# ------------------------------------------------------------ robot API
+
+
+def _command_json(c):
+    return {"id": c["id"], "command": c["command"], "status": c["status"], "error": c["error"],
+            "created": c["created_at"], "updated": c["updated_at"]}
+
+
+@app.route("/api/robot/<serial>")
+def api_robot(serial):
+    conn = db()
+    r = conn.execute("SELECT * FROM robots WHERE serial = ?", (serial,)).fetchone()
+    if not r:
+        abort(404)
+    since = time.time() - 86400
+    counts = {row["type"]: row["n"] for row in conn.execute(
+        "SELECT type, COUNT(*) AS n FROM activities WHERE robot_serial = ? AND ts >= ? GROUP BY type", (serial, since))}
+    last_visit = conn.execute("SELECT MAX(ts) AS ts FROM activities WHERE robot_serial = ? AND type = 'PET_VISIT'",
+                              (serial,)).fetchone()["ts"]
+    recent = [dict(id=a["id"], ts=a["ts"], type=a["type"], subtype=a["subtype"]) for a in conn.execute(
+        "SELECT id, ts, type, subtype FROM activities WHERE robot_serial = ? AND type != 'PET_VISIT' "
+        "ORDER BY ts DESC LIMIT 12", (serial,))]
+    commands = [_command_json(c) for c in conn.execute(
+        "SELECT * FROM robot_commands WHERE robot_serial = ? ORDER BY id DESC LIMIT 20", (serial,))]
+    latest = {}
+    for c in commands:
+        latest.setdefault(c["command"], c)
+    return jsonify(
+        robot={"serial": r["serial"], "name": r["name"], "model": r["model"], "timezone": r["timezone"]},
+        robots=[dict(x) for x in conn.execute("SELECT serial, name FROM robots ORDER BY name")],
+        info=json.loads(r["info"]) if r["info"] else None, info_at=r["info_at"],
+        last_24h={"visits": counts.get("PET_VISIT", 0), "cycles": counts.get("CYCLE_COMPLETED", 0)},
+        last_visit=last_visit, recent=recent, latest=latest,
+        history=[c for c in commands if c["command"] != "refresh"][:6],
+    )
+
+
+@app.route("/api/robot/<serial>/command", methods=["POST"])
+def api_robot_command(serial):
+    conn = db()
+    if not conn.execute("SELECT 1 FROM robots WHERE serial = ?", (serial,)).fetchone():
+        abort(404)
+    command = (request.get_json(force=True, silent=True) or {}).get("command")
+    if command not in lr_db.ROBOT_COMMANDS:
+        abort(400)
+    conn.execute("BEGIN IMMEDIATE")
+    busy = lr_db.active_command(conn, serial, command)
+    if busy:
+        conn.rollback()
+        return jsonify(reason="in_progress", command=_command_json(busy)), 409
+    cid = lr_db.enqueue_command(conn, serial, command)
+    conn.commit()
+    return jsonify(command=_command_json(conn.execute("SELECT * FROM robot_commands WHERE id = ?", (cid,)).fetchone())), 202
 
 
 @app.route("/static/vendor/chart.umd.min.js")
@@ -142,19 +232,34 @@ def api_sync():
 def load_pets():
     """Pets in a stable order (by creation) so each cat keeps the same color."""
     rows = db().execute(
-        "SELECT pet_id, name, weight, last_weight_reading, is_active, image_url FROM pets "
+        "SELECT pet_id, name, weight, last_weight_reading, is_active, photo_file, photo_key FROM pets "
         "ORDER BY COALESCE(created_at, ''), name"
     ).fetchall()
     return [
         {"id": r["pet_id"], "name": r["name"], "slot": i, "active": bool(r["is_active"]),
-         "profile_weight": r["last_weight_reading"] or r["weight"], "image": r["image_url"]}
+         "profile_weight": r["last_weight_reading"] or r["weight"],
+         # the version param changes when the photo does, so browsers can cache it for long
+         "image": (url_for("pet_photo", pet_id=r["pet_id"], v=hashlib.sha1(r["photo_key"].encode()).hexdigest()[:10])
+                   if r["photo_file"] else None)}
         for i, r in enumerate(rows)
     ]
 
 
+@app.route("/pet-photo/<pet_id>")
+def pet_photo(pet_id):
+    row = db().execute("SELECT photo_file FROM pets WHERE pet_id = ?", (pet_id,)).fetchone()
+    if not row or not row["photo_file"]:
+        abort(404)
+    root = lr_db.photo_dir().resolve()
+    path = (root / row["photo_file"]).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        abort(404)
+    return send_file(path, max_age=30 * 86400)
+
+
 def load_visits(start: float | None = None, end: float | None = None, robot: str | None = None,
                 types=("PET_VISIT",)):
-    sql = ["SELECT a.*, o.pet_id AS o_pet, o.ignored AS o_ignored, o.note AS o_note, "
+    sql = ["SELECT a.*, o.pet_id AS o_pet, o.note AS o_note, "
            "o.activity_id IS NOT NULL AS has_override, r.name AS robot_name "
            "FROM activities a LEFT JOIN visit_overrides o ON o.activity_id = a.id "
            "LEFT JOIN robots r ON r.serial = a.robot_serial WHERE 1=1"]
@@ -171,17 +276,19 @@ def load_visits(start: float | None = None, end: float | None = None, robot: str
     sql.append("ORDER BY a.ts DESC")
     out = []
     for r in db().execute(" ".join(sql), params):
-        api_ids = json.loads(r["pet_ids"] or "[]")
-        api_pet = api_ids[0] if api_ids else None
-        pet = r["o_pet"] or api_pet
+        whisker_pet = lr_db.first_pet(r["pet_ids"])
+        robot_pet = lr_db.first_pet(r["original_pet_ids"] or r["pet_ids"])
+        pet = r["o_pet"] or whisker_pet
+        pet = None if pet == lr_db.UNKNOWN_PET else pet
         out.append({
             "id": r["id"], "ts": r["ts"], "type": r["type"], "subtype": r["subtype"],
             "robot": r["robot_serial"], "robot_name": r["robot_name"],
             "weight": r["pet_weight"], "duration": r["duration"],
             "waste_type": r["waste_type"], "waste_weight": r["waste_weight"],
-            "api_pet": api_pet, "pet": None if pet == lr_db.UNKNOWN_PET else pet,
-            "corrected": bool(r["o_pet"]) and r["o_pet"] != api_pet,
-            "ignored": bool(r["o_ignored"]), "note": r["o_note"] or "",
+            # api_pet is what the robot first recorded; whisker_pet is Whisker's current assignment
+            "api_pet": robot_pet, "whisker_pet": whisker_pet, "pet": pet,
+            "corrected": r["type"] == "PET_VISIT" and pet != robot_pet,
+            "note": r["o_note"] or "",
             "camera_event_ids": json.loads(r["camera_event_ids"] or "[]"),
         })
     return out
@@ -193,7 +300,7 @@ def reference_weights(pets) -> dict[str, float]:
     since = time.time() - 30 * 86400
     by_pet = defaultdict(list)
     for v in load_visits(start=since):
-        if v["pet"] and v["weight"] and not v["ignored"]:
+        if v["pet"] and v["weight"]:
             by_pet[v["pet"]].append(v["weight"])
     refs = {}
     for p in pets:
@@ -208,7 +315,7 @@ def annotate(v, refs, active_ids):
     """Add a weight-based cat suggestion and a needs-review flag."""
     v["suggested"] = None
     v["review"] = False
-    if v["type"] != "PET_VISIT" or v["ignored"]:
+    if v["type"] != "PET_VISIT":
         return v
     w = v["weight"]
     if w and refs:
@@ -295,7 +402,8 @@ def api_meta():
     types = [r["type"] for r in db().execute("SELECT DISTINCT type FROM activities ORDER BY type")]
     last = db().execute("SELECT MAX(ts) AS ts FROM activities").fetchone()["ts"]
     return jsonify(pets=pets, robots=robots, types=types, last_activity=last,
-                   match_window={"before": MATCH_BEFORE_S, "after": MATCH_AFTER_S})
+                   match_window={"before": MATCH_BEFORE_S, "after": MATCH_AFTER_S},
+                   writeback=lr_db.writeback_enabled(db()))
 
 
 def _date_bound(value: str | None, tz, end=False):
@@ -331,7 +439,7 @@ def api_events():
     if flt == "review":
         visits = [v for v in visits if v["review"]]
     elif flt == "corrected":
-        visits = [v for v in visits if v["corrected"] or v["ignored"]]
+        visits = [v for v in visits if v["corrected"]]
 
     total = len(visits)
     size = min(int(request.args.get("size", 100)), 500)
@@ -346,6 +454,9 @@ def _one_event(event_id):
     if not row:
         abort(404)
     v = next(x for x in load_visits(row["ts"], row["ts"] + 0.001, types=None) if x["id"] == event_id)
+    p = lr_db.latest_push(db(), event_id)
+    v["push"] = ({"status": p["status"], "error": p["error"], "to_pet": p["to_pet"], "at": p["updated_at"]}
+                 if p else None)
     pets = load_pets()
     return annotate(v, reference_weights(pets), {p["id"] for p in pets if p["active"]})
 
@@ -366,35 +477,76 @@ def api_event(event_id):
 @app.route("/api/events/<event_id>/override", methods=["POST", "DELETE"])
 def api_override(event_id):
     conn = db()
-    if not conn.execute("SELECT 1 FROM activities WHERE id = ?", (event_id,)).fetchone():
+    act = conn.execute("SELECT type, pet_ids, original_pet_ids FROM activities WHERE id = ?", (event_id,)).fetchone()
+    if not act:
         abort(404)
+    whisker_pet = lr_db.first_pet(act["pet_ids"])
+    robot_pet = lr_db.first_pet(act["original_pet_ids"] or act["pet_ids"])
+    push_to = ...  # Ellipsis = no Whisker change
     if request.method == "DELETE":
         conn.execute("DELETE FROM visit_overrides WHERE activity_id = ?", (event_id,))
+        push_to = robot_pet
     else:
         body = request.get_json(force=True, silent=True) or {}
         cur = conn.execute("SELECT * FROM visit_overrides WHERE activity_id = ?", (event_id,)).fetchone()
         pet_id = cur["pet_id"] if cur else None
-        ignored = cur["ignored"] if cur else 0
         note = cur["note"] if cur else None
         if "pet_id" in body:
             pet_id = body["pet_id"] or None
             if pet_id not in (None, lr_db.UNKNOWN_PET) and not conn.execute(
                     "SELECT 1 FROM pets WHERE pet_id = ?", (pet_id,)).fetchone():
                 abort(400)
-        if "ignored" in body:
-            ignored = 1 if body["ignored"] else 0
+            push_to = None if pet_id == lr_db.UNKNOWN_PET else (pet_id or whisker_pet)
+            if pet_id == whisker_pet:
+                pet_id = None
         if "note" in body:
             note = (body["note"] or "").strip()[:500] or None
-        if pet_id is None and not ignored and not note:
+        if pet_id is None and not note:
             conn.execute("DELETE FROM visit_overrides WHERE activity_id = ?", (event_id,))
         else:
             conn.execute(
-                "INSERT INTO visit_overrides (activity_id, pet_id, ignored, note, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(activity_id) DO UPDATE SET pet_id=excluded.pet_id, "
-                "ignored=excluded.ignored, note=excluded.note, updated_at=excluded.updated_at",
-                (event_id, pet_id, ignored, note, time.time()))
+                "INSERT INTO visit_overrides (activity_id, pet_id, note, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(activity_id) DO UPDATE SET pet_id=excluded.pet_id, "
+                "note=excluded.note, updated_at=excluded.updated_at",
+                (event_id, pet_id, note, time.time()))
+    if (push_to is not ... and act["type"] == "PET_VISIT" and lr_db.writeback_enabled(conn)
+            and (push_to != whisker_pet or lr_db.latest_push(conn, event_id))):
+        lr_db.enqueue_push(conn, event_id, push_to)
     conn.commit()
     return jsonify(event=_one_event(event_id))
+
+
+@app.route("/api/events/<event_id>/push", methods=["POST"])
+def api_retry_push(event_id):
+    """Re-send this visit's current cat to Whisker (retry after a failure)."""
+    conn = db()
+    v = _one_event(event_id)
+    if v["type"] != "PET_VISIT":
+        abort(400)
+    lr_db.enqueue_push(conn, event_id, v["pet"])
+    conn.commit()
+    return jsonify(event=_one_event(event_id))
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    conn = db()
+    if request.method == "POST":
+        body = request.get_json(force=True, silent=True) or {}
+        if "writeback" in body:
+            lr_db.set_state(conn, "writeback", "1" if body["writeback"] else "0")
+        if "unit" in body:
+            if body["unit"] not in ("kg", "lb"):
+                abort(400)
+            lr_db.set_state(conn, "weight_unit", body["unit"])
+        conn.commit()
+    pending = conn.execute("SELECT COUNT(*) AS n FROM whisker_pushes WHERE status IN ('pending', 'sending')").fetchone()["n"]
+    failed = conn.execute(
+        "SELECT COUNT(*) AS n FROM whisker_pushes p WHERE status = 'error' AND id = "
+        "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)").fetchone()["n"]
+    return jsonify(writeback=lr_db.writeback_enabled(conn), unit=weight_unit(), pending=pending, failed=failed,
+                   retention=retention_info(),
+                   sync_interval=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
 
 
 # ------------------------------------------------------------ analysis API
@@ -427,8 +579,8 @@ def api_analysis():
     active = {p["id"] for p in pets if p["active"]}
     everything = load_visits(start - n_days * 86400, None, robot, types=None)
     in_range = [annotate(v, refs, active) for v in everything if v["ts"] >= start]
-    visits = [v for v in in_range if v["type"] == "PET_VISIT" and not v["ignored"]]
-    prev_visits = [v for v in everything if v["ts"] < start and v["type"] == "PET_VISIT" and not v["ignored"]]
+    visits = [v for v in in_range if v["type"] == "PET_VISIT"]
+    prev_visits = [v for v in everything if v["ts"] < start and v["type"] == "PET_VISIT"]
 
     dates = [(start_dt + timedelta(days=i)).date() for i in range(n_days)]
     didx = {d: i for i, d in enumerate(dates)}
@@ -521,7 +673,7 @@ def api_analysis():
     pairs = Counter()
     corrected = 0
     for v in in_range:
-        if v["type"] == "PET_VISIT" and (v["corrected"] or v["ignored"]):
+        if v["type"] == "PET_VISIT" and v["corrected"]:
             corrected += 1
             if v["corrected"]:
                 pairs[(v["api_pet"] or "none", v["pet"] or "unknown")] += 1
@@ -536,7 +688,7 @@ def api_analysis():
         totals={"visits": len(visits), "unassigned": sum(daily["none"]),
                 "per_day": round(len(visits) / n_days, 2),
                 "cycles": sum(cycles_daily), "offline": len(offline), "interrupted": interrupted,
-                "corrected": corrected, "ignored": sum(1 for v in in_range if v["ignored"])},
+                "corrected": corrected},
         kpis=kpis, daily=daily, hourly=hourly, heatmap=heat, weights=weight_series,
         durations={k: round(_median(v), 1) for k, v in durations.items()},
         cycles_daily=cycles_daily,
@@ -549,6 +701,7 @@ def api_analysis():
 
 def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pairs, names,
                    offline, interrupted, cycles_daily, now, tz):
+    unit = weight_unit()
     out = []
     by_pet = {k["pet"]: k for k in kpis}
     week = 7 * 86400
@@ -575,7 +728,7 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
                                     f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
         if k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5:
             pct, ch = k["weight_change_pct"], k["weight_change"]
-            out.append(("warn", f"{name}'s weight changed {ch:+.2f} lb ({pct:+.1f}%) over this period. "
+            out.append(("warn", f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) over this period. "
                                 f"A sustained change of 5%+ is worth mentioning to your vet."))
         w = k["waste"]
         any_feces = any(x["waste"].get("Feces") for x in kpis)

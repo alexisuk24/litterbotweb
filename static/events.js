@@ -9,7 +9,7 @@ const s = {
 const petName = id => id === UNKNOWN ? 'Unknown' : (s.pets[id]?.name ?? 'No cat');
 const petSlot = id => s.pets[id]?.slot ?? -1;
 function catChip(id, extra = '') {
-  return `<span class="chip"><span class="cat-dot" style="background:${catColor(petSlot(id))}"></span>${esc(petName(id))}${extra}</span>`;
+  return `<span class="chip">${catBadge(s.pets[id], petSlot(id), 16)}${esc(petName(id))}${extra}</span>`;
 }
 
 // ---------------------------------------------------------------- filters / URL
@@ -87,15 +87,14 @@ function evRow(v) {
   const isVisit = v.type === 'PET_VISIT';
   const thumb = v.thumb ? `style="background-image:url('${esc(v.thumb)}')"` : '';
   const badges = [];
-  if (v.ignored) badges.push('<span class="badge off">Ignored</span>');
-  else if (v.corrected) badges.push('<span class="badge edit">Edited</span>');
-  if (v.review && !v.ignored) badges.push(`<span class="badge warn" title="${v.pet ? `Weight is closer to ${esc(petName(v.suggested))}` : 'No cat assigned'}">Check</span>`);
+  if (v.corrected) badges.push('<span class="badge edit">Edited</span>');
+  if (v.review) badges.push(`<span class="badge warn" title="${v.pet ? `Weight is closer to ${esc(petName(v.suggested))}` : 'No cat assigned'}">Check</span>`);
   const details = isVisit ? [
     v.weight != null ? fmtW(v.weight) : null,
     v.duration != null ? fmtDur(v.duration) : null,
     v.waste_type || null,
   ].filter(Boolean) : [typeLabel(v.type), v.subtype].filter(Boolean);
-  return `<div class="ev${v.id === s.active ? ' active' : ''}${v.ignored ? ' ignored' : ''}" data-id="${esc(v.id)}">
+  return `<div class="ev${v.id === s.active ? ' active' : ''}" data-id="${esc(v.id)}">
     <div class="thumb" ${thumb}>${v.thumb ? '' : (v.clip_count ? '▶' : '—')}</div>
     <div class="main">
       <div class="row1"><span class="time">${fmtTime(v.ts)}</span>${isVisit ? catChip(v.pet) : `<span class="muted" style="font-size:.85rem">${esc(typeLabel(v.type))}</span>`}</div>
@@ -202,6 +201,79 @@ function renderStrip() {
   return `<div class="strip" id="strip">${h}</div>`;
 }
 
+function pushStatus(v) {
+  const p = v.push;
+  if (!p) return '';
+  const target = esc(p.to_pet ? petName(p.to_pet) : 'no cat');
+  if (p.status === 'pending' || p.status === 'sending')
+    return `<div class="push pending">⟳ Sending to Whisker: ${target}…</div>`;
+  if (p.status === 'error')
+    return `<div class="push err">⚠ Whisker update failed: ${esc(p.error || 'unknown error')} <button class="btn" id="retryBtn">Retry</button></div>`;
+  return `<div class="push ok">✓ Updated in the Whisker app (${target})</div>`;
+}
+
+function pickHtml(v) {
+  const ordered = [...s.meta.pets].sort((a, b) => (b.active - a.active) || (a.slot - b.slot));
+  const btn = (id, label, sub, key) => {
+    const on = id === UNKNOWN ? !v.pet : v.pet === id;
+    const dot = id === UNKNOWN ? '' : catBadge(s.pets[id], petSlot(id), 30);
+    return `<button data-pet="${esc(id)}" class="${on ? 'on' : ''}">${dot}<span>${esc(label)}${sub ? `<span class="sub">${sub}</span>` : ''}</span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+  };
+  const buttons = ordered.map((p, i) => {
+    const subs = [];
+    if (p.ref_weight) subs.push(`usually ${fmtW(p.ref_weight)}`);
+    if (p.id === v.suggested && v.weight) subs.push('closest weight');
+    if (p.id === v.api_pet && v.corrected) subs.push('robot said');
+    return btn(p.id, p.name, subs.join(' · '), i < 9 ? i + 1 : '');
+  }).join('') + btn(UNKNOWN, 'Unknown / other', '', '0');
+
+  let callout = '';
+  if (v.review) {
+    callout = v.pet
+      ? `<div class="callout">This visit weighed ${fmtW(v.weight)}, which is closer to ${esc(petName(v.suggested))} than ${esc(petName(v.pet))}. Check the clip.</div>`
+      : `<div class="callout">No cat was assigned to this visit.${v.suggested ? ` By weight it looks like ${esc(petName(v.suggested))}.` : ''}</div>`;
+  }
+  const recorded = `Robot recorded: ${esc(v.api_pet ? petName(v.api_pet) : 'no cat')}` +
+    (v.whisker_pet !== v.api_pet ? ` · Whisker now: ${esc(v.whisker_pet ? petName(v.whisker_pet) : 'no cat')}` : '');
+  const wb = s.meta.writeback;
+  return `<div class="section">
+    <h3><span>Who was this?</span><span class="saved" id="saved">Saved</span></h3>
+    ${callout}
+    <div class="pick" id="pick">${buttons}</div>
+    <div class="actions">
+      ${(v.corrected || v.note) ? `<button class="btn" id="revertBtn">Revert to what the robot recorded <kbd>u</kbd></button>` : ''}
+      <span class="muted" style="font-size:.78rem">${recorded}</span>
+    </div>
+    ${pushStatus(v)}
+    <div style="margin-top:.75rem"><textarea class="note" id="note" placeholder="Note (optional), e.g. 'both cats in at once'">${esc(v.note)}</textarea></div>
+    <div class="hint">${wb
+      ? 'Cat changes are also sent to the Whisker app; notes stay here.'
+      : 'Edits are kept in this app only; Whisker sync is off.'}
+      <a href="/settings" style="color:inherit">Change in Settings</a>.</div>
+  </div>`;
+}
+
+let pushPoll = null;
+function renderPick() {
+  const v = s.detail.event;
+  const wrap = el('pickWrap');
+  if (wrap) wrap.innerHTML = pickHtml(v);
+  clearTimeout(pushPoll);
+  if (v.push && (v.push.status === 'pending' || v.push.status === 'sending')) {
+    const id = v.id;
+    pushPoll = setTimeout(async () => {
+      if (s.active !== id) return;
+      try {
+        const r = await api(`/api/events/${encodeURIComponent(id)}`);
+        if (s.active !== id) return;
+        s.detail.event = r.event;
+        updateRow(r.event);
+        renderPick();
+      } catch {}
+    }, 2000);
+  }
+}
+
 function renderDetail() {
   const { event: v, nearby } = s.detail;
   const isVisit = v.type === 'PET_VISIT';
@@ -215,41 +287,7 @@ function renderDetail() {
     s.meta.robots.length > 1 && ['Robot', v.robot_name || v.robot],
   ].filter(Boolean);
 
-  let pick = '';
-  if (isVisit) {
-    const ordered = [...s.meta.pets].sort((a, b) => (b.active - a.active) || (a.slot - b.slot));
-    const btn = (id, label, sub, key) => {
-      const on = id === UNKNOWN ? !v.pet : v.pet === id;
-      const dot = id === UNKNOWN ? '' : `<span class="cat-dot" style="background:${catColor(petSlot(id))}"></span>`;
-      return `<button data-pet="${esc(id)}" class="${on ? 'on' : ''}">${dot}<span>${esc(label)}${sub ? `<span class="sub">${sub}</span>` : ''}</span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
-    };
-    const buttons = ordered.map((p, i) => {
-      const subs = [];
-      if (p.ref_weight) subs.push(`usually ${fmtW(p.ref_weight)}`);
-      if (p.id === v.suggested && v.weight) subs.push('closest weight');
-      if (p.id === v.api_pet && v.corrected) subs.push('robot said');
-      return btn(p.id, p.name, subs.join(' · '), i < 9 ? i + 1 : '');
-    }).join('') + btn(UNKNOWN, 'Unknown / other', '', '0');
-
-    let callout = '';
-    if (v.review && !v.ignored) {
-      callout = v.pet
-        ? `<div class="callout">This visit weighed ${fmtW(v.weight)}, which is closer to ${esc(petName(v.suggested))} than ${esc(petName(v.pet))}. Check the clip.</div>`
-        : `<div class="callout">No cat was assigned to this visit.${v.suggested ? ` By weight it looks like ${esc(petName(v.suggested))}.` : ''}</div>`;
-    }
-    pick = `<div class="section">
-      <h3><span>Who was this?</span><span class="saved" id="saved">Saved</span></h3>
-      ${callout}
-      <div class="pick" id="pick">${buttons}</div>
-      <div class="actions">
-        <button class="btn" id="ignoreBtn">${v.ignored ? 'Un-ignore' : 'Ignore this visit'} <kbd>x</kbd></button>
-        ${(v.corrected || v.ignored || v.note) ? `<button class="btn" id="revertBtn">Revert to robot's data <kbd>u</kbd></button>` : ''}
-        <span class="muted" style="font-size:.78rem">Robot recorded: ${esc(v.api_pet ? petName(v.api_pet) : 'no cat')}</span>
-      </div>
-      <div style="margin-top:.75rem"><textarea class="note" id="note" placeholder="Note (optional), e.g. 'both cats in at once'">${esc(v.note)}</textarea></div>
-      <div class="hint">Edits are stored locally in this app only; nothing is sent back to Whisker. Ignored visits are left out of the analysis.</div>
-    </div>`;
-  }
+  const pick = isVisit ? `<div id="pickWrap">${pickHtml(v)}</div>` : '';
 
   const near = nearby.length ? `<div class="section"><h3>Within 30 minutes</h3><div class="nearby">${
     nearby.map(n => `<div><span>${fmtTime(n.ts)}</span><a href="#" data-id="${esc(n.id)}">${esc(typeLabel(n.type))}</a>${
@@ -267,13 +305,7 @@ function renderDetail() {
     el('playerWrap').outerHTML = renderPlayer();
     el('strip').querySelectorAll('.c').forEach(n => n.classList.toggle('on', +n.dataset.i === s.clipIdx));
   });
-  el('pick')?.addEventListener('click', e => {
-    const b = e.target.closest('button[data-pet]');
-    if (b) assign(b.dataset.pet);
-  });
-  el('ignoreBtn')?.addEventListener('click', toggleIgnore);
-  el('revertBtn')?.addEventListener('click', revert);
-  el('note')?.addEventListener('change', e => save({ note: e.target.value }));
+  renderPick();
   el('detail').querySelectorAll('.nearby a').forEach(a => a.addEventListener('click', e => {
     e.preventDefault(); select(a.dataset.id);
   }));
@@ -289,13 +321,7 @@ async function save(body, method = 'POST') {
   if (s.active !== id) return;
   s.detail.event = r.event;
   updateRow(r.event);
-  const vid = el('detail').querySelector('video');
-  const keep = vid && { t: vid.currentTime, paused: vid.paused };
-  const scroll = el('strip')?.scrollLeft;
-  renderDetail();
-  const nv = el('detail').querySelector('video');
-  if (keep && nv) { nv.currentTime = keep.t; if (keep.paused) nv.pause(); }
-  if (scroll && el('strip')) el('strip').scrollLeft = scroll;
+  renderPick();
   el('saved')?.classList.add('show');
   setTimeout(() => el('saved')?.classList.remove('show'), 1200);
 }
@@ -303,10 +329,9 @@ async function save(body, method = 'POST') {
 async function assign(petId) {
   const v = s.detail?.event;
   if (!v || v.type !== 'PET_VISIT') return;
-  await save({ pet_id: petId === v.api_pet ? null : petId });
+  await save({ pet_id: petId });
   if (s.f.filter === 'review') step(1);
 }
-const toggleIgnore = () => s.detail?.event.type === 'PET_VISIT' && save({ ignored: !s.detail.event.ignored });
 const revert = () => s.detail?.event.type === 'PET_VISIT' && save(null, 'DELETE');
 
 function step(d) {
@@ -320,8 +345,7 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); step(1); }
   else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); step(-1); }
-  else if (e.key === 'x') toggleIgnore();
-  else if (e.key === 'u') { if (s.detail?.event.corrected || s.detail?.event.ignored || s.detail?.event.note) revert(); }
+  else if (e.key === 'u') { if (s.detail?.event.corrected || s.detail?.event.note) revert(); }
   else if (e.key === '0') assign(UNKNOWN);
   else if (/^[1-9]$/.test(e.key)) {
     const ordered = [...s.meta.pets].sort((a, b) => (b.active - a.active) || (a.slot - b.slot));
@@ -330,8 +354,22 @@ document.addEventListener('keydown', e => {
   }
 });
 
-onUnitChange.push(() => { renderList(); if (s.detail) renderDetail(); });
-el('detail').addEventListener('click', e => { if (e.target.closest('#keepBtn')) toggleKeep(); });
+el('detail').addEventListener('click', async e => {
+  const t = e.target;
+  if (t.closest('#keepBtn')) toggleKeep();
+  else if (t.closest('#revertBtn')) revert();
+  else if (t.closest('#retryBtn')) {
+    const id = s.active;
+    const r = await api(`/api/events/${encodeURIComponent(id)}/push`, { method: 'POST' });
+    if (s.active === id) { s.detail.event = r.event; renderPick(); }
+  } else {
+    const b = t.closest('#pick button[data-pet]');
+    if (b) assign(b.dataset.pet);
+  }
+});
+el('detail').addEventListener('change', async e => {
+  if (e.target.id === 'note') save({ note: e.target.value });
+});
 
 window.addEventListener('lr-synced', async () => {
   try {

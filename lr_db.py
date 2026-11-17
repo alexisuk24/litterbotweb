@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/litterrobot.db"))
+PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+               "image/heic": ".heic", "image/heif": ".heif"}
+
+
+def photo_dir(db_path: Path | str | None = None) -> Path:
+    """Cat profile photos live next to the database."""
+    return Path(db_path or DB_PATH).parent / "pet-photos"
 
 # Sentinel stored in visit_overrides.pet_id for "not one of my cats / can't tell".
 UNKNOWN_PET = "__unknown__"
@@ -30,7 +37,9 @@ CREATE TABLE IF NOT EXISTS robots (
     model            TEXT,
     camera_device_id TEXT,
     raw              TEXT,
-    updated_at       REAL
+    updated_at       REAL,
+    info             TEXT,
+    info_at          REAL
 );
 CREATE TABLE IF NOT EXISTS pets (
     pet_id              TEXT PRIMARY KEY,
@@ -41,6 +50,8 @@ CREATE TABLE IF NOT EXISTS pets (
     last_weight_reading REAL,
     is_active           INTEGER,
     image_url           TEXT,
+    photo_file          TEXT,
+    photo_key           TEXT,
     created_at          TEXT,
     raw                 TEXT,
     updated_at          REAL
@@ -62,8 +73,28 @@ CREATE TABLE IF NOT EXISTS activities (
     waste_weight     REAL,
     duration         REAL,
     pet_ids          TEXT,
+    original_pet_ids TEXT,
     camera_event_ids TEXT,
     raw              TEXT
+);
+CREATE TABLE IF NOT EXISTS whisker_pushes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id  TEXT NOT NULL,
+    to_pet       TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    error        TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS whisker_pushes_activity ON whisker_pushes (activity_id, id);
+CREATE TABLE IF NOT EXISTS robot_commands (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    robot_serial TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    error        TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS activities_ts ON activities (ts);
 CREATE INDEX IF NOT EXISTS activities_type_ts ON activities (type, ts);
@@ -124,7 +155,40 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE clips ADD COLUMN keep INTEGER NOT NULL DEFAULT 0")
     if "deleted_at" not in cols:
         conn.execute("ALTER TABLE clips ADD COLUMN deleted_at REAL")
+    # "ignore this visit" was removed; un-ignore anything still flagged so it counts again
+    conn.execute("UPDATE visit_overrides SET ignored = 0 WHERE ignored != 0")
+    conn.execute("DELETE FROM visit_overrides WHERE pet_id IS NULL AND COALESCE(note, '') = ''")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(pets)")}
+    if "photo_file" not in cols:
+        conn.execute("ALTER TABLE pets ADD COLUMN photo_file TEXT")
+        conn.execute("ALTER TABLE pets ADD COLUMN photo_key TEXT")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(robots)")}
+    if "info" not in cols:
+        conn.execute("ALTER TABLE robots ADD COLUMN info TEXT")
+        conn.execute("ALTER TABLE robots ADD COLUMN info_at REAL")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(activities)")}
+    if "original_pet_ids" not in cols:
+        conn.execute("ALTER TABLE activities ADD COLUMN original_pet_ids TEXT")
+        conn.execute("UPDATE activities SET original_pet_ids = pet_ids")
+        # cameraEvents was previously misread as cameraEventIds
+        for r in conn.execute("SELECT id, raw FROM activities").fetchall():
+            try:
+                ids = camera_event_ids(json.loads(r["raw"] or "{}"))
+            except ValueError:
+                continue
+            conn.execute("UPDATE activities SET camera_event_ids = ? WHERE id = ?", (json.dumps(ids), r["id"]))
     conn.commit()
+
+
+def camera_event_ids(item: dict) -> list[str]:
+    """IDs from cameraEvents, which may hold plain IDs or objects."""
+    out = []
+    for e in (item.get("cameraEvents") or item.get("cameraEventIds") or []):
+        if isinstance(e, dict):
+            out += [str(e[k]) for k in ("id", "eventId", "videoId", "clipId") if e.get(k)]
+        elif e:
+            out.append(str(e))
+    return out
 
 
 # ------------------------------------------------------------------ parsing
@@ -258,10 +322,14 @@ def upsert_activities(conn, robot_serial: str, items: Iterable[dict]) -> tuple[i
         ids.append(aid)
         if not conn.execute("SELECT 1 FROM activities WHERE id = ?", (aid,)).fetchone():
             new += 1
+        pet_ids = json.dumps(item.get("petIds") or [])
+        # original_pet_ids keeps the robot's first guess; pet_ids tracks Whisker's
+        # current assignment, which changes when a visit is reassigned
         conn.execute(
             """INSERT INTO activities (id, robot_serial, type, subtype, ts, pet_weight, waste_type,
-                                       waste_weight, duration, pet_ids, camera_event_ids, raw)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       waste_weight, duration, pet_ids, original_pet_ids,
+                                       camera_event_ids, raw)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET pet_weight=excluded.pet_weight,
                  waste_type=excluded.waste_type, waste_weight=excluded.waste_weight,
                  duration=excluded.duration, pet_ids=excluded.pet_ids,
@@ -269,10 +337,82 @@ def upsert_activities(conn, robot_serial: str, items: Iterable[dict]) -> tuple[i
             (aid, robot_serial, item.get("type") or "UNKNOWN", item.get("subtype"), ts,
              visit_weight_lbs(item.get("petWeight")), item.get("wasteType"),
              _num(item.get("wasteWeight")), _num(item.get("duration")),
-             json.dumps(item.get("petIds") or []), json.dumps(item.get("cameraEventIds") or []),
+             pet_ids, pet_ids, json.dumps(camera_event_ids(item)),
              json.dumps(item, default=str)),
         )
     return new, ids
+
+
+# ------------------------------------------------------------ Whisker write-back
+
+
+def writeback_enabled(conn) -> bool:
+    return get_state(conn, "writeback") != "0"  # on unless switched off in Settings
+
+
+def first_pet(pet_ids_json: str | None) -> str | None:
+    ids = json.loads(pet_ids_json or "[]")
+    return ids[0] if ids else None
+
+
+def enqueue_push(conn, activity_id: str, to_pet: str | None) -> None:
+    """Ask the collector to set this visit's cat in Whisker (None = no cat).
+    Only the newest request per visit matters, so older unsent ones are dropped."""
+    conn.execute("DELETE FROM whisker_pushes WHERE activity_id = ? AND status = 'pending'", (activity_id,))
+    now = time.time()
+    conn.execute("INSERT INTO whisker_pushes (activity_id, to_pet, status, created_at, updated_at) "
+                 "VALUES (?, ?, 'pending', ?, ?)", (activity_id, to_pet, now, now))
+
+
+def latest_push(conn, activity_id: str):
+    return conn.execute("SELECT * FROM whisker_pushes WHERE activity_id = ? ORDER BY id DESC LIMIT 1",
+                        (activity_id,)).fetchone()
+
+
+def has_pending_pushes(conn) -> bool:
+    return conn.execute("SELECT 1 FROM whisker_pushes WHERE status = 'pending' LIMIT 1").fetchone() is not None
+
+
+def finish_push(conn, push_id: int, activity_id: str, to_pet: str | None, error: str | None) -> None:
+    now = time.time()
+    conn.execute("UPDATE whisker_pushes SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                 ("error" if error else "done", error, now, push_id))
+    if not error:  # reflect the new assignment now rather than waiting for the next sync
+        conn.execute("UPDATE activities SET pet_ids = ? WHERE id = ?",
+                     (json.dumps([to_pet] if to_pet else []), activity_id))
+    conn.commit()
+
+
+# ------------------------------------------------------------ robot commands
+
+# web-facing name -> pylitterbot method (None = just refresh the status)
+ROBOT_COMMANDS = {
+    "clean": "start_cleaning",
+    "reset_drawer": "reset_waste_drawer",
+    "remote_reset": "reset",
+    "refresh": None,
+}
+
+
+def set_robot_info(conn, serial: str, info: dict) -> None:
+    conn.execute("UPDATE robots SET info = ?, info_at = ? WHERE serial = ?",
+                 (json.dumps(info, default=str), time.time(), serial))
+
+
+def enqueue_command(conn, serial: str, command: str) -> int:
+    now = time.time()
+    cur = conn.execute("INSERT INTO robot_commands (robot_serial, command, status, created_at, updated_at) "
+                       "VALUES (?, ?, 'pending', ?, ?)", (serial, command, now, now))
+    return cur.lastrowid
+
+
+def active_command(conn, serial: str, command: str):
+    return conn.execute("SELECT * FROM robot_commands WHERE robot_serial = ? AND command = ? "
+                        "AND status IN ('pending', 'sending') ORDER BY id DESC LIMIT 1", (serial, command)).fetchone()
+
+
+def has_pending_commands(conn) -> bool:
+    return conn.execute("SELECT 1 FROM robot_commands WHERE status = 'pending' LIMIT 1").fetchone() is not None
 
 
 def upsert_clip(conn, *, clip_id, robot_serial, robot_folder, raw, video_file=None, thumb_file=None) -> None:

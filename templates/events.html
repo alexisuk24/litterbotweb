@@ -22,7 +22,6 @@
 .ev { display: grid; grid-template-columns: 72px 1fr auto; gap: .75rem; align-items: center; padding: .55rem 1rem; cursor: pointer; border-left: 3px solid transparent; }
 .ev:hover { background: var(--surface2); }
 .ev.active { background: var(--surface2); border-left-color: var(--accent); }
-.ev.ignored { opacity: .45; }
 .ev .thumb { width: 72px; height: 41px; border-radius: 6px; background: #000 center/cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: .7rem; }
 .ev .main { min-width: 0; }
 .ev .row1 { display: flex; align-items: center; gap: .5rem; }
@@ -62,6 +61,10 @@
 .nearby { font-size: .8rem; display: grid; gap: .25rem; }
 .nearby div { display: flex; gap: .6rem; color: var(--text2); font-variant-numeric: tabular-nums; }
 .nearby a { color: inherit; }
+.push { font-size: .8rem; margin-top: .6rem; display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.push.pending { color: var(--text2); }
+.push.ok { color: var(--teal); }
+.push.err { color: var(--warn); }
 .saved { font-size: .75rem; color: var(--teal); opacity: 0; transition: opacity .3s; }
 .saved.show { opacity: 1; }
 </style>
@@ -86,7 +89,7 @@
     <div class="card list" id="list"><div class="empty">Loading…</div></div>
     <div class="card detail idle" id="detail">
       <div class="empty"><div class="empty-icon">🐾</div><div>Select an event to see its clips</div>
-        <div class="hint"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> assign cat · <kbd>0</kbd> unknown · <kbd>x</kbd> ignore · <kbd>u</kbd> undo edit</div>
+        <div class="hint"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> assign cat · <kbd>0</kbd> unknown · <kbd>u</kbd> undo edit</div>
       </div>
     </div>
   </div>

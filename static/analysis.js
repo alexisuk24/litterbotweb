@@ -57,14 +57,14 @@ function render() {
       ${tile('Visits', d.totals.visits, `${d.totals.per_day} per day`)}
       ${tile('Clean cycles', d.totals.cycles, `${(d.totals.cycles / d.days).toFixed(1)} per day`)}
       ${tile('No cat assigned', d.totals.unassigned, d.totals.unassigned ? '<a href="/events?pet=none" style="color:inherit">review →</a>' : 'all identified')}
-      ${tile('Your corrections', d.totals.corrected, `${corrPct}% of visits${d.totals.ignored ? ` · ${d.totals.ignored} ignored` : ''}`)}
+      ${tile('Your corrections', d.totals.corrected, `${corrPct}% of visits`)}
       ${tile('Offline events', d.totals.offline, d.totals.interrupted ? `${d.totals.interrupted} interrupted cycles` : 'no interrupted cycles')}
     </div>
 
     <div class="span-12 cats">${pets.map(catCard).join('')}</div>
 
     <div class="card panel span-12">
-      <h2>Visits per day</h2><div class="sub">Each bar is one day, split by cat. Ignored visits are excluded.</div>
+      <h2>Visits per day</h2><div class="sub">Each bar is one day, split by cat.</div>
       <div class="chart"><canvas id="cDaily"></canvas></div>
     </div>
 
@@ -126,7 +126,7 @@ function catCard(p) {
   const total = Object.values(w).reduce((a, b) => a + b, 0);
   const split = total ? Object.entries(w).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${esc(t)} ${Math.round(100 * n / total)}%`).join(' · ') : '—';
   return `<div class="card cat" style="--c:${color}">
-    <div class="name">${p.image ? `<img src="${esc(p.image)}" alt="" onerror="this.remove()">` : ''}<span class="cat-dot" style="background:${color}"></span>${esc(p.name)}${p.active ? '' : ' <span class="badge off">inactive</span>'}</div>
+    <div class="name">${catBadge(p, p.slot, 40)}${esc(p.name)}${p.active ? '' : ' <span class="badge off">inactive</span>'}</div>
     <div class="stats">
       <div class="stat"><div class="k">Visits / day</div><div class="v">${k.per_day ?? 0}</div><div class="d">${trend}</div></div>
       <div class="stat"><div class="k">Weight</div><div class="v">${fmtW(k.weight)}</div><div class="d">${wch}</div></div>
@@ -286,7 +286,6 @@ el('range').addEventListener('click', e => {
   s.days = v; store.set('lr-range', v); load();
 });
 el('robot').addEventListener('change', e => { s.robot = e.target.value; load(); });
-onUnitChange.push(() => s.data && render());
 window.addEventListener('lr-synced', load);
 
 (async function init() {

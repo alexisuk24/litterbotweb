@@ -212,11 +212,13 @@ async def process_robot(
             lr_db.upsert_clip(db, clip_id=clip.id, robot_serial=robot.serial, robot_folder=folder.name,
                               raw=clip.raw, video_file=mp4.name,
                               thumb_file=thumb.name if thumb.exists() else None)
+            db.commit()
             continue
         if lr_db.is_clip_deleted(db, clip.id):  # removed by retention; don't fetch it again
             continue
         lr_db.upsert_clip(db, clip_id=clip.id, robot_serial=robot.serial,
                           robot_folder=folder.name, raw=clip.raw)
+        db.commit()
         folder.mkdir(parents=True, exist_ok=True)
 
         playback = await client.get_video_playback(clip.id)  # fresh cookies per clip
@@ -257,6 +259,55 @@ def _safe(fn, default=None):
         return default
 
 
+def _epoch(dt):
+    return dt.timestamp() if dt else None
+
+
+def robot_info(robot: LitterRobot5) -> dict:
+    """Snapshot of the robot's state for the Robots page."""
+    status = _safe(lambda: robot.status)
+    level_state = _safe(lambda: robot.litter_level_state)
+    faults = {
+        "Waste drawer full": _safe(lambda: robot.is_waste_drawer_full),
+        "Drawer-full indicator on": _safe(lambda: robot.is_drawer_full_indicator_triggered),
+        "Waste drawer removed": _safe(lambda: robot.is_drawer_removed),
+        "Bonnet removed": _safe(lambda: robot.is_bonnet_removed),
+        "Laser sensor needs cleaning": _safe(lambda: robot.is_laser_dirty),
+        "Gas sensor fault": _safe(lambda: robot.is_gas_sensor_fault_detected),
+        "USB fault": _safe(lambda: robot.is_usb_fault_detected),
+    }
+    motor = _safe(lambda: robot.globe_motor_fault_status)
+    motor_name = getattr(motor, "name", None)
+    if motor_name and motor_name not in ("NONE", "OK", "UNKNOWN"):
+        faults[f"Globe motor: {motor_name.replace('_', ' ').lower()}"] = True
+    return {
+        "status": getattr(status, "text", None) or (str(status) if status else None),
+        "status_code": _safe(lambda: robot.status_code),
+        "online": _safe(lambda: robot.is_online),
+        "on": _safe(lambda: robot.is_on),
+        "sleeping": _safe(lambda: robot.is_sleeping),
+        "sleep_mode": _safe(lambda: robot.sleep_mode_enabled),
+        "last_seen": _epoch(_safe(lambda: robot.last_seen)),
+        "setup_date": _epoch(_safe(lambda: robot.setup_date)),
+        "model": _safe(lambda: robot.model),
+        "litter_level": _safe(lambda: robot.litter_level),
+        "litter_state": getattr(level_state, "name", None),
+        "hopper": _safe(lambda: robot.hopper_status_text),
+        "drawer_level": _safe(lambda: robot.waste_drawer_level),
+        "cycles_since_empty": _safe(lambda: robot.cycle_count),
+        "total_cycles": _safe(lambda: robot.odometer_empty_cycles),
+        "filter_cycles": _safe(lambda: robot.odometer_filter_cycles),
+        "next_filter": _epoch(_safe(lambda: robot.next_filter_replacement_date)),
+        "scoops_saved": _safe(lambda: robot.scoops_saved_count),
+        "wait_minutes": _safe(lambda: robot.clean_cycle_wait_time_minutes),
+        "wifi_rssi": _safe(lambda: robot.wifi_rssi),
+        "firmware": _safe(lambda: robot.firmware),
+        "firmware_status": _safe(lambda: robot.firmware_update_status),
+        "firmware_updating": _safe(lambda: robot.is_firmware_updating),
+        "faults": [name for name, on in faults.items() if on],
+    }
+
+
 def sync_robot(db, robot: LitterRobot5) -> None:
     status = _safe(lambda: robot.status)
     lr_db.upsert_robot(
@@ -273,6 +324,7 @@ def sync_robot(db, robot: LitterRobot5) -> None:
         cycle_count=_safe(lambda: robot.cycle_count),
         status=getattr(status, "text", None) or (str(status) if status else None),
     )
+    lr_db.set_robot_info(db, robot.serial, robot_info(robot))
 
 
 async def sync_activities(db, robot: LitterRobot5, max_pages: int) -> int:
@@ -299,25 +351,61 @@ async def sync_activities(db, robot: LitterRobot5, max_pages: int) -> int:
     return total_new
 
 
-async def sync_pets(db, account: Account) -> None:
-    for pet in account.pets:
-        try:
-            await pet.fetch_weight_history(limit=1000)
-        except Exception as err:
-            LOG.debug("weight history failed for %s: %s", pet.name, err)
-        data = dict(pet.to_dict())
-        data["weightHistory"] = [
-            {"timestamp": w.timestamp.isoformat(), "weight": w.weight} for w in pet.weight_history
-        ]
-        lr_db.upsert_pet(db, data)
+async def save_pet_photo(db, http: aiohttp.ClientSession, photos: Path, pet_id: str, url: str | None) -> None:
+    """Keep a local copy of the cat's profile photo; Whisker's links expire within hours.
+    The URL path (without the signature) changes only when the photo does."""
+    if not url:
+        return
+    key = url.split("?", 1)[0]
+    row = db.execute("SELECT photo_file, photo_key FROM pets WHERE pet_id = ?", (pet_id,)).fetchone()
+    if row and row["photo_key"] == key and row["photo_file"] and (photos / row["photo_file"]).exists():
+        return
+    async with http.get(url) as resp:
+        resp.raise_for_status()
+        ext = lr_db.PHOTO_TYPES.get(resp.content_type)
+        if not ext:
+            raise RuntimeError(f"unexpected content type {resp.content_type}")
+        data = await resp.content.read(15 * 1024 * 1024 + 1)
+    if len(data) > 15 * 1024 * 1024:
+        raise RuntimeError("photo larger than 15 MB")
+    photos.mkdir(parents=True, exist_ok=True)
+    name = f"{slug(pet_id)}{ext}"
+    for old in photos.glob(f"{slug(pet_id)}.*"):
+        old.unlink(missing_ok=True)
+    (photos / name).write_bytes(data)
+    db.execute("UPDATE pets SET photo_file = ?, photo_key = ? WHERE pet_id = ?", (name, key, pet_id))
     db.commit()
+    LOG.info("Saved profile photo for pet %s", pet_id)
+
+
+async def sync_pets(db, account: Account, photos: Path) -> None:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as http:
+        for pet in account.pets:
+            await _sync_pet(db, http, photos, pet)
     LOG.info("Synced %d pet(s)", len(account.pets))
+
+
+async def _sync_pet(db, http: aiohttp.ClientSession, photos: Path, pet) -> None:
+    try:
+        await pet.fetch_weight_history(limit=1000)
+    except Exception as err:
+        LOG.debug("weight history failed for %s: %s", pet.name, err)
+    data = dict(pet.to_dict())
+    data["weightHistory"] = [
+        {"timestamp": w.timestamp.isoformat(), "weight": w.weight} for w in pet.weight_history
+    ]
+    lr_db.upsert_pet(db, data)
+    db.commit()
+    try:
+        await save_pet_photo(db, http, photos, pet.id, pet.image_url)
+    except Exception as err:
+        LOG.warning("profile photo for %s failed: %s", pet.name, err)
 
 
 async def sync_metadata(account: Account, robots: list[LitterRobot5], args: argparse.Namespace) -> None:
     db = args.db_conn
     try:
-        await sync_pets(db, account)
+        await sync_pets(db, account, lr_db.photo_dir(args.db))
     except Exception:
         LOG.exception("pet sync failed")
     for robot in robots:
@@ -402,9 +490,13 @@ async def main() -> int:
         args.retention_days = args.days + 2
     lr_db.set_state(db, "retention_days", str(args.retention_days))
     lr_db.set_state(db, "sync_running", "0")
+    db.execute("UPDATE whisker_pushes SET status = 'pending' WHERE status = 'sending'")  # interrupted last time
+    db.execute("UPDATE robot_commands SET status = 'error', error = 'Interrupted by a restart', updated_at = ? "
+               "WHERE status IN ('pending', 'sending')", (time.time(),))
     db.commit()
 
     account = Account()
+    worker = None if args.dump else asyncio.create_task(outbox_worker(args.db, account))
     last_update_check: datetime | None = None
     trigger = "startup"
     try:
@@ -436,6 +528,8 @@ async def main() -> int:
                 return 1 if error else 0
             trigger = await wait_for_next_run(db, args.interval)
     finally:
+        if worker:
+            worker.cancel()
         await account.disconnect()
 
 
@@ -457,6 +551,104 @@ def apply_retention(db, args: argparse.Namespace) -> None:
     deleted = lr_db.apply_retention(db, Path(args.out), args.retention_days, LOG)
     if deleted:
         LOG.info("Retention: deleted %d clip(s) older than %d days", deleted, args.retention_days)
+
+
+async def send_pushes(db, account: Account) -> None:
+    """Send cat reassignments queued by the web UI to Whisker."""
+    robots = {r.serial: r for r in account.robots if isinstance(r, LitterRobot5)}
+    if not robots:  # not logged in yet; try again after the next connect
+        return
+    rows = db.execute(
+        "SELECT p.id, p.activity_id, p.to_pet, a.robot_serial, a.pet_ids, a.raw FROM whisker_pushes p "
+        "JOIN activities a ON a.id = p.activity_id WHERE p.status = 'pending' ORDER BY p.id"
+    ).fetchall()
+    for p in rows:
+        cur = db.execute("UPDATE whisker_pushes SET status = 'sending', updated_at = ? "
+                         "WHERE id = ? AND status = 'pending'", (time.time(), p["id"]))
+        db.commit()
+        if not cur.rowcount:  # superseded by a newer request
+            continue
+        current, target = lr_db.first_pet(p["pet_ids"]), p["to_pet"]
+        error = None
+        if current != target:
+            event_id = json.loads(p["raw"] or "{}").get("eventId")
+            robot = robots.get(p["robot_serial"])
+            if not event_id:
+                error = "This visit has no eventId, so Whisker can't update it"
+            elif not robot:
+                error = "Robot not found on this account"
+            else:
+                try:
+                    result = await robot.reassign_pet_visit(
+                        event_id, from_pet_id=current, to_pet_id=target)
+                except Exception as err:
+                    result, error = None, str(err)[:200]
+                if result is None:
+                    error = error or "Whisker rejected the change"
+        lr_db.finish_push(db, p["id"], p["activity_id"], target, error)
+        if error:
+            LOG.warning("Whisker update for visit %s failed: %s", p["activity_id"], error)
+        else:
+            LOG.info("Whisker: visit %s now assigned to %s", p["activity_id"], target or "no cat")
+
+
+async def run_commands(db, account: Account) -> None:
+    """Run robot commands (clean, reset, ...) queued by the web UI."""
+    # a clean cycle firing long after the click would be a surprise, so stale requests expire
+    db.execute("UPDATE robot_commands SET status = 'error', error = 'Not sent: the collector was not ready in time', "
+               "updated_at = ? WHERE status = 'pending' AND created_at < ?", (time.time(), time.time() - 120))
+    db.commit()
+    robots = {r.serial: r for r in account.robots if isinstance(r, LitterRobot5)}
+    if not robots:
+        return
+    for c in db.execute("SELECT * FROM robot_commands WHERE status = 'pending' ORDER BY id").fetchall():
+        robot = robots.get(c["robot_serial"])
+        db.execute("UPDATE robot_commands SET status = 'sending', updated_at = ? WHERE id = ?", (time.time(), c["id"]))
+        db.commit()
+        error = None
+        if not robot:
+            error = "Robot not found on this account"
+        elif c["command"] not in lr_db.ROBOT_COMMANDS:
+            error = f"Unknown command {c['command']}"
+        else:
+            method = lr_db.ROBOT_COMMANDS[c["command"]]
+            try:
+                if method and not await getattr(robot, method)():
+                    error = "Whisker rejected the command"
+            except Exception as err:
+                error = str(err)[:200] or type(err).__name__
+            try:
+                if method:
+                    await asyncio.sleep(2)  # give the robot a moment to report its new state
+                await robot.refresh()
+                lr_db.set_robot_info(db, robot.serial, robot_info(robot))
+            except Exception as err:
+                LOG.debug("refresh after %s failed: %s", c["command"], err)
+        db.execute("UPDATE robot_commands SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                   ("error" if error else "done", error, time.time(), c["id"]))
+        db.commit()
+        if c["command"] != "refresh":
+            if error:
+                LOG.warning("%s: %s failed: %s", c["robot_serial"], c["command"], error)
+            else:
+                LOG.info("%s: %s sent", c["robot_serial"], c["command"])
+
+
+async def outbox_worker(db_path: str, account: Account) -> None:
+    """Background loop that acts on requests from the web UI (robot commands and
+    Whisker cat corrections) within a couple of seconds, even mid-sync."""
+    db = lr_db.connect(db_path)
+    while True:
+        try:
+            if lr_db.has_pending_commands(db):
+                await run_commands(db, account)
+            if lr_db.has_pending_pushes(db):
+                await send_pushes(db, account)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("handling web UI requests failed")
+        await asyncio.sleep(1.5)
 
 
 async def wait_for_next_run(db, interval: int) -> str:

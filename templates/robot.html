@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Robots · Litter Robot</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+.wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 1rem; }
+.tabs { display: flex; gap: .5rem; flex-wrap: wrap; }
+.tabs a { padding: .4rem 1rem; border-radius: 2rem; border: 1px solid var(--border); background: var(--surface); color: var(--muted); text-decoration: none; font-size: .875rem; }
+.tabs a.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.head { padding: 1.1rem 1.2rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.head h1 { font-size: 1.35rem; font-weight: 650; }
+.head .model { color: var(--muted); font-size: .85rem; margin-top: .15rem; }
+.head .right { margin-left: auto; text-align: right; font-size: .8rem; color: var(--muted); }
+.head .right a { color: var(--text2); cursor: pointer; text-decoration: underline; }
+.state { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; font-weight: 600; padding: .3rem .7rem; border-radius: 999px; background: var(--surface2); }
+.state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.state.ok .dot { background: #3fb68b; }
+.state.warn { background: var(--warn-bg); color: var(--warn); }
+.state.warn .dot { background: var(--warn); }
+.faults { display: grid; gap: .4rem; padding: 0 1.2rem 1rem; }
+.faults div { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .45rem .7rem; font-size: .85rem; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; }
+.tile { padding: .9rem 1rem; }
+.tile .k { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.tile .v { font-size: 1.45rem; font-weight: 650; margin-top: .2rem; font-variant-numeric: tabular-nums; }
+.tile .d { font-size: .78rem; color: var(--text2); margin-top: .15rem; }
+.bar { height: 6px; border-radius: 3px; background: var(--surface2); margin-top: .55rem; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 3px; background: var(--teal); }
+.bar.warn i { background: var(--warn); }
+
+.cols { display: grid; grid-template-columns: 3fr 2fr; gap: 1rem; align-items: start; }
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+.panel h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
+.act { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; padding: .9rem 1.1rem; border-top: 1px solid var(--border); }
+.act:first-of-type { border-top: 0; }
+.act .label { font-weight: 600; }
+.act .desc { font-size: .82rem; color: var(--muted); margin-top: .25rem; line-height: 1.5; }
+.act .res { font-size: .8rem; margin-top: .4rem; }
+.act .res.ok { color: var(--teal); } .act .res.err { color: var(--warn); } .act .res.busy { color: var(--text2); }
+.act .btns { display: flex; gap: .4rem; flex-shrink: 0; }
+.btn.go { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled { opacity: .5; cursor: default; }
+.list { padding: .25rem 1.1rem 1rem; display: grid; gap: .35rem; font-size: .84rem; }
+.list div { display: flex; gap: .75rem; color: var(--text2); font-variant-numeric: tabular-nums; }
+.list .t { color: var(--muted); min-width: 7.5rem; }
+.fw { padding: .25rem 1.1rem 1rem; font-size: .84rem; color: var(--text2); line-height: 1.6; }
+.fw code { font-family: ui-monospace, monospace; font-size: .78rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; word-break: break-all; }
+.fw .note { color: var(--muted); font-size: .8rem; margin-top: .5rem; }
+</style>
+</head>
+<body>
+{% include "_nav.html" %}
+<div class="page">
+  <div class="wrap" id="root" data-serial="{{ serial }}"><div class="card"><div class="empty">Loading…</div></div></div>
+</div>
+<script src="/static/common.js"></script>
+<script src="/static/robot.js"></script>
+<script src="/static/sync.js"></script>
+</body>
+</html>
