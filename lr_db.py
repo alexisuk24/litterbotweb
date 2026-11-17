@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,6 +26,20 @@ PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
 def photo_dir(db_path: Path | str | None = None) -> Path:
     """Cat profile photos live next to the database."""
     return Path(db_path or DB_PATH).parent / "pet-photos"
+
+
+# Each process writes its own file so rotation never races between them.
+LOG_DIR = Path(os.environ.get("LOG_DIR", DB_PATH.parent / "logs"))
+LOG_FILES = {"sync": "sync.log", "web": "web.log"}
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+
+
+def log_file_handler(source: str) -> logging.Handler:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(LOG_DIR / LOG_FILES[source], maxBytes=1_000_000, backupCount=3,
+                                  encoding="utf-8")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    return handler
 
 # Sentinel stored in visit_overrides.pet_id for "not one of my cats / can't tell".
 UNKNOWN_PET = "__unknown__"

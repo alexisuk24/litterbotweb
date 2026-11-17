@@ -4,6 +4,7 @@ from __future__ import annotations
 import bisect
 import hashlib
 import json
+import logging
 import os
 import re
 import statistics
@@ -668,6 +669,41 @@ def api_settings():
                    sync_interval=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
 
 
+LOG_TAIL_BYTES = 512 * 1024
+
+
+def _log_path(source: str) -> Path:
+    if source not in lr_db.LOG_FILES:
+        abort(404)
+    return lr_db.LOG_DIR / lr_db.LOG_FILES[source]
+
+
+@app.route("/api/logs/<source>")
+def api_logs(source):
+    path = _log_path(source)
+    limit = max(1, min(request.args.get("lines", 500, type=int), 5000))
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            f.seek(max(0, size - LOG_TAIL_BYTES))
+            data = f.read()
+    except FileNotFoundError:
+        return jsonify(lines=[], exists=False)
+    lines = data.decode("utf-8", "replace").splitlines()
+    if size > LOG_TAIL_BYTES:
+        lines = lines[1:]  # first line is probably cut in half
+    return jsonify(lines=lines[-limit:], exists=True, size=size, modified=path.stat().st_mtime)
+
+
+@app.route("/api/logs/<source>/download")
+def api_logs_download(source):
+    path = _log_path(source)
+    if not path.exists():
+        abort(404)
+    return send_file(path, mimetype="text/plain", as_attachment=True,
+                     download_name=f"litterrobot-{lr_db.LOG_FILES[source]}", max_age=0)
+
+
 # ------------------------------------------------------------ analysis API
 
 
@@ -985,4 +1021,11 @@ def serve_video(robot, filename):
 
 
 if __name__ == "__main__":
+    # Warnings and errors only; per-request lines still go to the console.
+    try:
+        handler = lr_db.log_file_handler("web")
+        handler.setLevel(logging.WARNING)
+        logging.getLogger().addHandler(handler)
+    except OSError as err:
+        print(f"Not writing a web log file: {err}", flush=True)
     app.run(host="0.0.0.0", port=2287, debug=False, threaded=True)

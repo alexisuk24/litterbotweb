@@ -500,8 +500,12 @@ async def main() -> int:
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format=lr_db.LOG_FORMAT,
     )
+    try:
+        logging.getLogger().addHandler(lr_db.log_file_handler("sync"))
+    except OSError as err:
+        LOG.warning("Not writing a log file (Settings > Logs will be empty): %s", err)
     for var in ("LR_USERNAME", "LR_PASSWORD"):
         if not os.environ.get(var):
             LOG.error("%s is not set", var)

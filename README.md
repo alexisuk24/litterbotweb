@@ -32,6 +32,11 @@ robot snapshots (litter level, drawer level), and an index of every clip.
 
 Analysis uses your corrections.
 
+**Settings** also shows the app logs: the sync collector's log (downloads, activity
+sync, Whisker updates) and the web server's warnings and errors, with a
+warnings-and-errors filter and a download button. The sync log has the same lines `docker logs`
+shows, but kept across container restarts.
+
 **Robots** has a page per robot: status, faults, waste drawer and litter levels,
 cycle counts, filter date, Wi-Fi and firmware, plus actions to start a clean cycle,
 reset the waste drawer gauge after emptying it, and remote-reset the robot (each asks
@@ -76,7 +81,8 @@ Or as a container that polls hourly: copy this folder to
 Output layout: `clips/<robot name>/<robot name>_<YYYY-MM-DD>_<HH-MM-SS>.mp4`
 
 Volumes: `/clips` (videos) and `/data` (SQLite database, plus each cat's profile photo in
-`/data/pet-photos`, copied at sync because Whisker's photo links expire within hours).
+`/data/pet-photos`, copied at sync because Whisker's photo links expire within hours,
+and log files in `/data/logs`).
 The container runs as uid/gid 1000, so both host folders must be owned by it
 (`sudo chown -R 1000:1000 <folder>`); it exits with that hint if they aren't.
 
@@ -96,6 +102,7 @@ docker buildx build --pull --platform linux/amd64 \
 | `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything) |
 | `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
 | `DB_PATH` | /data/litterrobot.db | Database location |
+| `LOG_DIR` | /data/logs | Where `sync.log` and `web.log` are written (1 MB each, 3 rotated copies kept) |
 
 ## How the API works
 
