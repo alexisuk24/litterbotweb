@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS whisker_pushes (
     updated_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS whisker_pushes_activity ON whisker_pushes (activity_id, id);
+CREATE TABLE IF NOT EXISTS camera_detections (
+    id             TEXT PRIMARY KEY,
+    robot_serial   TEXT NOT NULL,
+    ts             REAL NOT NULL,
+    pet_id         TEXT,
+    distance       REAL,
+    detection_type TEXT
+);
+CREATE INDEX IF NOT EXISTS camera_detections_ts ON camera_detections (robot_serial, ts);
 CREATE TABLE IF NOT EXISTS firmware_history (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     robot_serial TEXT NOT NULL,
@@ -419,6 +428,26 @@ def set_robot_info(conn, serial: str, info: dict) -> None:
     conn.execute("UPDATE robots SET info = ?, info_at = ? WHERE serial = ?",
                  (json.dumps(info, default=str), time.time(), serial))
     record_firmware(conn, serial, info.get("firmware"))
+
+
+def upsert_detections(conn, serial: str, events: Iterable[dict]) -> int:
+    """Store the camera's own cat recognition from its ai_event feed.
+    association.distance is a cosine distance: lower means a closer match."""
+    new = 0
+    for e in events:
+        if e.get("type") != "ai_event":
+            continue
+        data = ((e.get("metadata") or {}).get("payload") or {}).get("data") or {}
+        assoc = (data.get("object") or {}).get("association") or {}
+        ts = to_epoch(e.get("createdAt"))
+        if ts is None or not e.get("id"):
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO camera_detections (id, robot_serial, ts, pet_id, distance, detection_type) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (str(e["id"]), serial, ts, assoc.get("id"), _num(assoc.get("distance")), data.get("detection_type")))
+        new += cur.rowcount
+    return new
 
 
 def parse_firmware(text: str | None) -> dict[str, str]:

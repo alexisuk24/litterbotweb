@@ -101,6 +101,17 @@ async function loadMore() {
   renderList();
 }
 
+const pct = x => `${Math.round(x * 100)}%`;
+
+// The camera's own guess for a visit: just the score when it agrees with the
+// assigned cat, the cat's name too (highlighted) when it doesn't.
+function cameraTag(v) {
+  const c = v.camera;
+  if (!c) return '';
+  const title = `Camera AI matched ${petName(c.pet)} (${pct(c.similarity)} similar, ${c.count} detection${c.count === 1 ? '' : 's'})`;
+  return `<span class="cam${c.agrees ? '' : ' cam-diff'}" title="${esc(title)}">📷 ${c.agrees ? '' : esc(petName(c.pet)) + ' '}${pct(c.similarity)}</span>`;
+}
+
 function evRow(v) {
   const isVisit = v.type === 'PET_VISIT';
   const thumb = v.thumb ? `style="background-image:url('${esc(v.thumb)}')"` : '';
@@ -116,7 +127,7 @@ function evRow(v) {
     <div class="thumb" ${thumb}>${v.thumb ? '' : (v.clip_count ? '▶' : '—')}</div>
     <div class="main">
       <div class="row1"><span class="time">${fmtTime(v.ts)}</span>${isVisit ? catChip(v.pet) : `<span class="muted" style="font-size:.85rem">${esc(typeLabel(v.type))}</span>`}</div>
-      <div class="row2">${details.map(esc).join('<span>·</span>')}</div>
+      <div class="row2">${details.map(esc).join('<span>·</span>')}${cameraTag(v)}</div>
     </div>
     <div class="side">${badges.join('')}${v.clip_count > 1 ? `<span class="muted" style="font-size:.7rem">${v.clip_count} clips</span>` : ''}</div>
   </div>`;
@@ -300,6 +311,7 @@ function pickHtml(v) {
     if (p.ref_weight) subs.push(`usually ${fmtW(p.ref_weight)}`);
     if (p.id === v.suggested && v.weight) subs.push('closest weight');
     if (p.id === v.api_pet && v.corrected) subs.push('robot said');
+    if (v.camera && p.id === v.camera.pet) subs.push(`camera ${pct(v.camera.similarity)}`);
     return btn(p.id, p.name, subs.join(' · '), i < 9 ? i + 1 : '');
   }).join('') + btn(UNKNOWN, 'Unknown / other', '', '0');
 
@@ -309,6 +321,11 @@ function pickHtml(v) {
       ? `<div class="callout">This visit weighed ${fmtW(v.weight)}, which is closer to ${esc(petName(v.suggested))} than ${esc(petName(v.pet))}. Check the clip.</div>`
       : `<div class="callout">No cat was assigned to this visit.${v.suggested ? ` By weight it looks like ${esc(petName(v.suggested))}.` : ''}</div>`;
   }
+  const camLine = (v.camera_detections || []).length
+    ? `<div class="camline">📷 Camera AI: ${v.camera_detections.map(d =>
+        `<span title="${esc(new Date(d.ts * 1000).toLocaleTimeString())}">${esc(petName(d.pet))} ${pct(d.similarity)}</span>`).join(', ')}
+       <span class="muted">(similarity to each cat's profile; higher is a closer match)</span></div>`
+    : '';
   const recorded = `Robot recorded: ${esc(v.api_pet ? petName(v.api_pet) : 'no cat')}` +
     (v.whisker_pet !== v.api_pet ? ` · Whisker now: ${esc(v.whisker_pet ? petName(v.whisker_pet) : 'no cat')}` : '');
   const wb = s.meta.writeback;
@@ -321,6 +338,7 @@ function pickHtml(v) {
       ${(v.corrected || v.note) ? `<button class="btn" id="revertBtn">Revert to what the robot recorded <kbd>u</kbd></button>` : ''}
       <span class="muted" style="font-size:.78rem">${recorded}</span>
     </div>
+    ${camLine}
     ${pushStatus(v)}
     <div style="margin-top:.75rem"><textarea class="note" id="note" placeholder="Note (optional), e.g. 'both cats in at once'">${esc(v.note)}</textarea></div>
     <div class="hint">${tooOld

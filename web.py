@@ -168,6 +168,7 @@ def api_robot(serial):
         robot={"serial": r["serial"], "name": r["name"], "model": r["model"], "timezone": r["timezone"]},
         robots=[dict(x) for x in conn.execute("SELECT serial, name FROM robots ORDER BY name")],
         info=json.loads(r["info"]) if r["info"] else None, info_at=r["info_at"],
+        clips_stale=json.loads(lr_db.get_state(conn, f"clips_stale:{serial}") or "null"),
         last_24h={"visits": counts.get("PET_VISIT", 0), "cycles": counts.get("CYCLE_COMPLETED", 0)},
         last_visit=last_visit, recent=recent, latest=latest,
         history=[c for c in commands if c["command"] != "refresh"][:6],
@@ -454,6 +455,36 @@ def api_keep(clip_id):
     return jsonify(id=c["id"], **keep_fields(c))
 
 
+# camera detections this close to a visit count as that visit's
+CAM_BEFORE_S, CAM_AFTER_S = 180, 120
+
+
+def attach_camera(visits, detail=False):
+    """Add the camera's own cat recognition: its best match among detections around
+    each visit. Similarity is 1 - cosine distance (higher = closer match)."""
+    pv = [v for v in visits if v["type"] == "PET_VISIT"]
+    if not pv:
+        return
+    lo = min(v["ts"] - (v["duration"] or 0) for v in pv) - CAM_BEFORE_S
+    hi = max(v["ts"] for v in pv) + CAM_AFTER_S
+    by_robot = defaultdict(list)
+    for d in db().execute("SELECT robot_serial, ts, pet_id, distance FROM camera_detections "
+                          "WHERE ts >= ? AND ts <= ? AND pet_id IS NOT NULL ORDER BY ts", (lo, hi)):
+        by_robot[d["robot_serial"]].append(d)
+    for v in pv:
+        rows = by_robot.get(v["robot"], [])
+        times = [d["ts"] for d in rows]
+        a = bisect.bisect_left(times, v["ts"] - (v["duration"] or 0) - CAM_BEFORE_S)
+        b = bisect.bisect_right(times, v["ts"] + CAM_AFTER_S)
+        hits = [d for d in rows[a:b] if d["distance"] is not None]
+        best = min(hits, key=lambda d: d["distance"], default=None)
+        v["camera"] = ({"pet": best["pet_id"], "similarity": round(1 - best["distance"], 3), "count": len(hits),
+                        "agrees": best["pet_id"] == v["pet"]} if best else None)
+        if detail:
+            v["camera_detections"] = [{"ts": d["ts"], "pet": d["pet_id"], "similarity": round(1 - d["distance"], 3)}
+                                      for d in hits]
+
+
 def attach_clip_summary(visits):
     if not visits:
         return
@@ -527,6 +558,7 @@ def api_events():
     page = max(int(request.args.get("page", 0)), 0)
     visits = visits[page * size:(page + 1) * size]
     attach_clip_summary(visits)
+    attach_camera(visits)
     return jsonify(total=total, page=page, size=size, events=visits)
 
 
@@ -539,6 +571,7 @@ def _one_event(event_id):
     v["push"] = ({"status": p["status"], "error": p["error"], "to_pet": p["to_pet"], "at": p["updated_at"]}
                  if p else None)
     v["whisker_editable"] = lr_db.whisker_editable(v["ts"])
+    attach_camera([v], detail=True)
     pets = load_pets()
     return annotate(v, reference_weights(pets), {p["id"] for p in pets if p["active"]})
 

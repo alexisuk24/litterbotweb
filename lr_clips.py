@@ -175,6 +175,27 @@ async def list_clips(robot: LitterRobot5, days: int) -> list:
     return sorted(seen.values(), key=lambda c: c.created_at or datetime.min.replace(tzinfo=timezone.utc))
 
 
+CLIP_STALE_AFTER_S = 3 * 3600
+
+
+def check_clip_list_freshness(db, robot: LitterRobot5, clips: list) -> None:
+    """Warn when visits keep coming but Whisker's clip list stops growing: downloads
+    can't fail in that case, so the stall would otherwise go unnoticed."""
+    newest_clip = max((c.created_at.timestamp() for c in clips if c.created_at), default=None)
+    row = db.execute("SELECT MAX(ts) AS ts, COUNT(*) AS n FROM activities WHERE robot_serial = ? "
+                     "AND type = 'PET_VISIT' AND ts > ?", (robot.serial, newest_clip or 0)).fetchone()
+    stale = newest_clip is not None and row["ts"] and row["ts"] - newest_clip > CLIP_STALE_AFTER_S
+    key = f"clips_stale:{robot.serial}"
+    if stale:
+        since = datetime.fromtimestamp(newest_clip).strftime("%d %b %H:%M")
+        LOG.warning("%s: Whisker's clip list hasn't updated since %s, but %d visit(s) have happened since; "
+                    "their videos will download if Whisker lists them later", robot.name, since, row["n"])
+        lr_db.set_state(db, key, json.dumps({"newest_clip": newest_clip, "visits_since": row["n"]}))
+    else:
+        lr_db.set_state(db, key, "")
+    db.commit()
+
+
 async def process_robot(
     robot: LitterRobot5, http: aiohttp.ClientSession, args: argparse.Namespace
 ) -> tuple[int, int]:
@@ -182,6 +203,8 @@ async def process_robot(
     client = robot.get_camera_client()
     clips = await list_clips(robot, args.days)
     LOG.info("%s: %d clip(s) listed", robot.name, len(clips))
+    if not args.dump:
+        check_clip_list_freshness(args.db_conn, robot, clips)
 
     if args.dump:
         d = Path(args.dump) / slug(robot.name)
@@ -414,6 +437,11 @@ async def sync_metadata(account: Account, robots: list[LitterRobot5], args: argp
             db.commit()
             new = await sync_activities(db, robot, args.activity_pages)
             LOG.info("%s: %d new activit%s", robot.name, new, "y" if new == 1 else "ies")
+            if robot.has_camera:
+                events = await robot.get_camera_client().get_events(limit=500)
+                found = lr_db.upsert_detections(db, robot.serial, events)
+                db.commit()
+                LOG.info("%s: %d new camera detection(s)", robot.name, found)
         except Exception:
             LOG.exception("%s: metadata sync failed", robot.name)
 

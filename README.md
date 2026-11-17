@@ -15,6 +15,9 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   Visits whose weight looks like a different cat (or that have no cat) are flagged
   **Check**; the *Needs review* filter lists just those. Keyboard: `↑/↓` move,
   `1–9` assign cat, `0` unknown, `u` undo.
+  Visits also show the camera's own cat recognition (from its AI detections around the
+  visit) as a similarity score, e.g. "📷 74%", highlighted with the cat's name when the
+  camera thinks it was a different cat.
   Corrections are stored in the local database, and cat changes, "Unknown" and
   reverts are also sent to your Whisker account (switch this off on the **Settings**
   page), which corrects that cat's weight history

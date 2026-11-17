@@ -53,6 +53,7 @@ function render() {
       <div class="right">Status as of ${ago(d.info_at)}<br>${refreshing ? 'Updating…' : '<a id="refreshNow">Update now</a>'}</div>
     </div>
     ${faulty ? `<div class="faults">${i.faults.map(f => `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : ''}
+    ${d.clips_stale ? `<div class="faults"><div>⚠ Whisker hasn't listed any new videos since ${esc(when(d.clips_stale.newest_clip))}, though ${d.clips_stale.visits_since} visit${d.clips_stale.visits_since === 1 ? ' has' : 's have'} happened since. They'll download automatically if Whisker lists them later.</div></div>` : ''}
   </div>
 
   <div class="tiles">
