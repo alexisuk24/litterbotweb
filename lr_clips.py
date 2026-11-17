@@ -5,6 +5,10 @@ Uses pylitterbot (>= 2025.6.5) for login and the camera inventory API, then
 fetches each clip's HLS stream with its short-lived CloudFront signed cookies
 and remuxes it to MP4 with ffmpeg.
 
+Each run also syncs metadata into a SQLite database (--db / DB_PATH): robots,
+pets and their weight history, the robot activity log (pet visits with weight,
+duration and waste type), robot state snapshots, and an index of every clip.
+
 Credentials come from the environment: LR_USERNAME, LR_PASSWORD.
 
 Files are saved as: {out}/{RobotName}/{RobotName}_{YYYY-MM-DD}_{HH-MM-SS}.mp4
@@ -27,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
@@ -36,7 +41,10 @@ import aiohttp
 from pylitterbot import Account
 from pylitterbot.robot.litterrobot5 import LitterRobot5
 
+import lr_db
+
 LOG = logging.getLogger("lr_clips")
+ACTIVITY_PAGE = 100
 URI_ATTR = re.compile(r'URI="([^"]+)"')
 SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -182,6 +190,9 @@ async def process_robot(
         (d / "clips.json").write_text(json.dumps([c.raw for c in clips], indent=2))
         (d / "events.json").write_text(json.dumps(await client.get_events(limit=200), indent=2))
         (d / "camera_info.json").write_text(json.dumps(await client.get_camera_info(), indent=2))
+        (d / "activities.json").write_text(json.dumps(await robot.get_activities(limit=200), indent=2))
+        (d / "pets.json").write_text(
+            json.dumps([p.to_dict() for p in robot._account.pets], indent=2, default=str))
         if clips:
             pb = await client.get_video_playback(clips[-1].id)
             if pb:
@@ -189,14 +200,23 @@ async def process_robot(
         LOG.info("%s: API dump written to %s", robot.name, d)
         return 0, 0
 
+    db = args.db_conn
     got = failed = 0
     for clip in clips:
         when = (clip.created_at or datetime.now(timezone.utc)).astimezone(tz)
         folder = Path(args.out) / slug(robot.name)
         stem = f"{slug(robot.name)}_{when:%Y-%m-%d}_{when:%H-%M-%S}"
         mp4 = folder / f"{stem}.mp4"
+        thumb = folder / f"{stem}.jpg"
         if mp4.exists():
+            lr_db.upsert_clip(db, clip_id=clip.id, robot_serial=robot.serial, robot_folder=folder.name,
+                              raw=clip.raw, video_file=mp4.name,
+                              thumb_file=thumb.name if thumb.exists() else None)
             continue
+        if lr_db.is_clip_deleted(db, clip.id):  # removed by retention; don't fetch it again
+            continue
+        lr_db.upsert_clip(db, clip_id=clip.id, robot_serial=robot.serial,
+                          robot_folder=folder.name, raw=clip.raw)
         folder.mkdir(parents=True, exist_ok=True)
 
         playback = await client.get_video_playback(clip.id)  # fresh cookies per clip
@@ -215,14 +235,99 @@ async def process_robot(
         (folder / f"{stem}.json").write_text(json.dumps(clip.raw, indent=2))
         if clip.thumbnail_url and not args.no_thumbs:
             try:
-                (folder / f"{stem}.jpg").write_bytes(
-                    await fetch(http, clip.thumbnail_url, playback.cookie_header)
-                )
+                thumb.write_bytes(await fetch(http, clip.thumbnail_url, playback.cookie_header))
             except Exception as err:
                 LOG.debug("thumbnail failed for %s: %s", clip.id, err)
+        lr_db.upsert_clip(db, clip_id=clip.id, robot_serial=robot.serial, robot_folder=folder.name,
+                          raw=clip.raw, video_file=mp4.name,
+                          thumb_file=thumb.name if thumb.exists() else None)
+        db.commit()
         got += 1
         LOG.info("%s: saved %s", robot.name, mp4.relative_to(args.out))
     return got, failed
+
+
+# --------------------------------------------------------------------- metadata
+
+
+def _safe(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def sync_robot(db, robot: LitterRobot5) -> None:
+    status = _safe(lambda: robot.status)
+    lr_db.upsert_robot(
+        db, serial=robot.serial, name=robot.name, folder=slug(robot.name),
+        timezone_name=robot.timezone, model=_safe(lambda: robot.model),
+        camera_device_id=(_safe(lambda: robot.camera_metadata) or {}).get("deviceId"),
+        raw=robot.to_dict(),
+    )
+    lr_db.add_snapshot(
+        db, robot_serial=robot.serial,
+        litter_level=_safe(lambda: robot.litter_level),
+        waste_drawer_level=_safe(lambda: robot.waste_drawer_level),
+        scale_weight=_safe(lambda: robot.pet_weight),
+        cycle_count=_safe(lambda: robot.cycle_count),
+        status=getattr(status, "text", None) or (str(status) if status else None),
+    )
+
+
+async def sync_activities(db, robot: LitterRobot5, max_pages: int) -> int:
+    """Page back through the activity log. The first run backfills as far as the
+    API allows (up to max_pages); later runs stop at the first page with nothing new."""
+    key = f"activities_backfilled:{robot.serial}"
+    backfilled = lr_db.get_state(db, key) == "1"
+    total_new, offset, prev_ids = 0, 0, None
+    for _ in range(max_pages):
+        items = await robot.get_activities(limit=ACTIVITY_PAGE, offset=offset)
+        if not items:
+            break
+        new, ids = lr_db.upsert_activities(db, robot.serial, items)
+        db.commit()
+        total_new += new
+        if ids == prev_ids:  # API ignored the offset; nothing further to page through
+            break
+        prev_ids = ids
+        if (backfilled and new == 0) or len(items) < ACTIVITY_PAGE:
+            break
+        offset += ACTIVITY_PAGE
+    lr_db.set_state(db, key, "1")
+    db.commit()
+    return total_new
+
+
+async def sync_pets(db, account: Account) -> None:
+    for pet in account.pets:
+        try:
+            await pet.fetch_weight_history(limit=1000)
+        except Exception as err:
+            LOG.debug("weight history failed for %s: %s", pet.name, err)
+        data = dict(pet.to_dict())
+        data["weightHistory"] = [
+            {"timestamp": w.timestamp.isoformat(), "weight": w.weight} for w in pet.weight_history
+        ]
+        lr_db.upsert_pet(db, data)
+    db.commit()
+    LOG.info("Synced %d pet(s)", len(account.pets))
+
+
+async def sync_metadata(account: Account, robots: list[LitterRobot5], args: argparse.Namespace) -> None:
+    db = args.db_conn
+    try:
+        await sync_pets(db, account)
+    except Exception:
+        LOG.exception("pet sync failed")
+    for robot in robots:
+        try:
+            sync_robot(db, robot)
+            db.commit()
+            new = await sync_activities(db, robot, args.activity_pages)
+            LOG.info("%s: %d new activit%s", robot.name, new, "y" if new == 1 else "ies")
+        except Exception:
+            LOG.exception("%s: metadata sync failed", robot.name)
 
 
 async def run_once(account: Account, args: argparse.Namespace) -> None:
@@ -230,16 +335,24 @@ async def run_once(account: Account, args: argparse.Namespace) -> None:
         username=os.environ["LR_USERNAME"],
         password=os.environ["LR_PASSWORD"],
         load_robots=True,
+        load_pets=True,
     )
     robots = [r for r in account.robots if isinstance(r, LitterRobot5) and r.has_camera]
     if not robots:
         LOG.error("No Litter-Robot 5 Pro with a camera found on this account")
         return
+    if not args.dump:
+        await sync_metadata(account, robots, args)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as http:
         for robot in robots:
             got, failed = await process_robot(robot, http, args)
             if not args.dump:
                 LOG.info("%s: %d new, %d failed", robot.name, got, failed)
+    if not args.dump:
+        added = lr_db.index_clip_files(args.db_conn, Path(args.out))
+        args.db_conn.commit()
+        if added:
+            LOG.info("Indexed %d clip(s) from disk", added)
 
 
 async def main() -> int:
@@ -255,6 +368,17 @@ async def main() -> int:
     p.add_argument("--update-interval", type=int,
         default=int(os.environ.get("PYBOT_UPDATE_INTERVAL", "86400")),
         help="check for pylitterbot updates every N seconds (default 86400); env: PYBOT_UPDATE_INTERVAL")
+    p.add_argument("--db", default=str(lr_db.DB_PATH),
+        help=f"SQLite database for metadata (default {lr_db.DB_PATH}); env: DB_PATH")
+    p.add_argument("--activity-pages", type=int,
+        default=int(os.environ.get("LR_ACTIVITY_MAX_PAGES", "50")),
+        help="max pages of 100 activities to fetch per run (default 50); env: LR_ACTIVITY_MAX_PAGES")
+    p.add_argument("--retention-days", type=int,
+        default=int(os.environ.get("LR_RETENTION_DAYS", "14")),
+        help="delete clips older than N days unless marked keep (default 14, 0 = never); env: LR_RETENTION_DAYS")
+    p.add_argument("--retention-grace-hours", type=float,
+        default=float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24")),
+        help="wait this long after retention is first enabled before deleting (default 24); env: LR_RETENTION_GRACE_HOURS")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
 
@@ -270,25 +394,81 @@ async def main() -> int:
         LOG.error("ffmpeg is required")
         return 2
 
+    args.db_conn = db = lr_db.connect(args.db)
+    if args.retention_days > 0 and args.retention_days < args.days + 2:
+        # anything younger would still be inside the download window and get re-fetched
+        LOG.warning("LR_RETENTION_DAYS=%d is shorter than the download window; using %d",
+                    args.retention_days, args.days + 2)
+        args.retention_days = args.days + 2
+    lr_db.set_state(db, "retention_days", str(args.retention_days))
+    lr_db.set_state(db, "sync_running", "0")
+    db.commit()
+
     account = Account()
     last_update_check: datetime | None = None
+    trigger = "startup"
     try:
         while True:
             now = datetime.now(timezone.utc)
             if last_update_check is None or (now - last_update_check).total_seconds() >= args.update_interval:
                 check_and_update_pylitterbot()
                 last_update_check = datetime.now(timezone.utc)
+            lr_db.set_state(db, "sync_running", "1")
+            lr_db.set_state(db, "sync_started", str(time.time()))
+            lr_db.set_state(db, "sync_trigger", trigger)
+            db.commit()
+            error = ""
             try:
                 await run_once(account, args)
-            except Exception:
+            except Exception as err:
                 LOG.exception("run failed")
-                if not args.interval:
-                    return 1
+                error = str(err)[:300] or type(err).__name__
+            if not args.dump:
+                try:
+                    apply_retention(db, args)
+                except Exception:
+                    LOG.exception("retention failed")
+            lr_db.set_state(db, "sync_error", error)
+            lr_db.set_state(db, "sync_finished", str(time.time()))
+            lr_db.set_state(db, "sync_running", "0")
+            db.commit()
             if not args.interval:
-                return 0
-            await asyncio.sleep(args.interval)
+                return 1 if error else 0
+            trigger = await wait_for_next_run(db, args.interval)
     finally:
         await account.disconnect()
+
+
+def apply_retention(db, args: argparse.Namespace) -> None:
+    if args.retention_days <= 0:
+        return
+    # Give a freshly enabled retention policy a grace period so existing clips
+    # can be marked "keep" before anything is removed.
+    enabled_at = lr_db.get_state(db, "retention_enabled_at")
+    if not enabled_at:
+        enabled_at = str(time.time())
+        lr_db.set_state(db, "retention_enabled_at", enabled_at)
+        db.commit()
+    starts = float(enabled_at) + args.retention_grace_hours * 3600
+    if time.time() < starts:
+        LOG.info("Retention: deleting clips older than %d days starts %s",
+                 args.retention_days, datetime.fromtimestamp(starts).strftime("%Y-%m-%d %H:%M"))
+        return
+    deleted = lr_db.apply_retention(db, Path(args.out), args.retention_days, LOG)
+    if deleted:
+        LOG.info("Retention: deleted %d clip(s) older than %d days", deleted, args.retention_days)
+
+
+async def wait_for_next_run(db, interval: int) -> str:
+    """Sleep until the next scheduled run, waking early for a manual refresh from the web UI."""
+    deadline = time.monotonic() + interval
+    while time.monotonic() < deadline:
+        requested = float(lr_db.get_state(db, "refresh_requested") or 0)
+        if requested > float(lr_db.get_state(db, "sync_started") or 0):
+            LOG.info("Manual refresh requested")
+            return "manual"
+        await asyncio.sleep(min(2, max(0.1, deadline - time.monotonic())))
+    return "scheduled"
 
 
 if __name__ == "__main__":

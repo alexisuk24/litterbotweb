@@ -9,7 +9,9 @@ services:
       TZ: ${TZ:-UTC}
       LR_DOWNLOAD_INTERVAL: ${LR_DOWNLOAD_INTERVAL:-3600}
       PYBOT_UPDATE_INTERVAL: ${PYBOT_UPDATE_INTERVAL:-86400}
+      LR_ACTIVITY_MAX_PAGES: ${LR_ACTIVITY_MAX_PAGES:-50}
     ports:
       - "2287:2287"
     volumes:
       - ${CLIPS_DIR:-./clips}:/clips
+      - ${DATA_DIR:-./data}:/data

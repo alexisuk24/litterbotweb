@@ -3,6 +3,37 @@
 Pulls recorded camera clips from the Whisker cloud for every Litter-Robot 5 Pro on
 your account and saves them as MP4 (plus a thumbnail and the raw clip JSON).
 
+It also collects the robot's metadata into a local SQLite database
+(`/data/litterrobot.db`): pets and their weight history, the activity log (each pet
+visit with weight, duration and waste type, plus clean cycles and offline events),
+robot snapshots (litter level, drawer level), and an index of every clip.
+
+## Web UI (port 2287)
+
+- **Events**: every pet visit with the camera clips recorded around it. Click a
+  visit to watch its clip(s), see the weight/duration, and fix which cat it was.
+  Visits whose weight looks like a different cat (or that have no cat) are flagged
+  **Check**; the *Needs review* filter lists just those. Keyboard: `↑/↓` move,
+  `1–9` assign cat, `0` unknown, `x` ignore (e.g. a false trigger), `u` undo.
+  Corrections are stored only in the local database and never sent to Whisker.
+- **Clips**: the calendar browser for downloaded clips.
+- **Analysis**: insights (visit-frequency changes, weight changes of 5% or more,
+  cats that haven't visited, offline events), per-cat cards, visits per day, weight
+  trend, time-of-day and weekday×hour patterns, clean cycles, litter/drawer levels,
+  and a table of the robot's most common cat mix-ups based on your corrections.
+
+Analysis uses your corrections and leaves ignored visits out.
+
+**Refresh** (top right on every page) runs a sync immediately instead of waiting for
+the next scheduled one. It's disabled while a sync is running and for 5 seconds after
+one finishes.
+
+**Retention**: clips older than `LR_RETENTION_DAYS` (14) are deleted after each sync,
+except clips marked **📌 Keep forever** (button under the player on the Events and Clips
+pages). The first time retention is enabled it waits `LR_RETENTION_GRACE_HOURS` (24)
+before deleting anything, so you can mark existing clips first. A banner shows when it
+starts. Deleted clips are never re-downloaded; their visit history stays.
+
 Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.6.5+, which
 already reverse-engineered the LR5 Pro camera APIs.
 
@@ -19,7 +50,28 @@ Or as a container that polls hourly: copy this folder to
 `/data/Containers/home/litterrobot-clips/`, create `.env` from `.env.example`, then
 `docker compose up -d --build`. Already-downloaded clips are skipped.
 
-Output layout: `clips/<robot name>/<YYYY-MM-DD>/<HHMMSS>_<eventType>_<id>.mp4`
+Output layout: `clips/<robot name>/<robot name>_<YYYY-MM-DD>_<HH-MM-SS>.mp4`
+
+Volumes: `/clips` (videos) and `/data` (SQLite database; set `DATA_DIR` in `.env`).
+The container runs as uid/gid 1000, so both host folders must be owned by it
+(`sudo chown -R 1000:1000 <folder>`); it exits with that hint if they aren't.
+
+Publishing the image (with the SBOM and provenance attestations Docker Scout checks for):
+
+```bash
+docker buildx build --pull --platform linux/amd64 \
+  --provenance=mode=max --sbom=true \
+  -t alexisuk24/lr_video_downloader:latest --push .
+```
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `LR_DOWNLOAD_INTERVAL` | 3600 | Seconds between sync runs (clips and metadata) |
+| `LR_ACTIVITY_MAX_PAGES` | 50 | Pages of 100 activities to backfill on the first run |
+| `MATCH_BEFORE_S` / `MATCH_AFTER_S` | 600 / 180 | How far before/after a visit a clip still counts as that visit's clip |
+| `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything) |
+| `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
+| `DB_PATH` | /data/litterrobot.db | Database location |
 
 ## How the API works
 
@@ -31,6 +83,8 @@ Output layout: `clips/<robot name>/<YYYY-MM-DD>/<HHMMSS>_<eventType>_<id>.mp4`
 | Clip detail | `GET .../prod/v1/camera-videos/{clipId}` | Response sets `CloudFront-Policy`, `CloudFront-Signature`, `CloudFront-Key-Pair-Id` cookies; body has `hlsUrl` |
 | Video | `GET {hlsUrl}` and each segment | Needs those cookies on every request, otherwise 403. Cookies are short-lived, so fetch them right before downloading |
 | Events | `GET .../cameras/{deviceId}/events` | AI detections; useful for matching clips to cats |
+| Activity log | `GET https://ub.prod.iothings.site/robots/{serial}/activities?limit=&offset=` | `PET_VISIT` rows carry `petWeight` (lb × 100), `duration`, `wasteType`, `petIds`, `cameraEventIds` |
+| Pets | GraphQL `https://pet-profile.iothings.site/graphql/` | Profiles and `weightHistory` |
 | Live view | `GET https://watford.ienso-dev.com/api/device-manager/client/generate-session/{deviceId}` then WebRTC signaling over `wss://.../api/signaling` | Not needed for clips |
 
 ## Unverified (check with `--dump` on first run)
@@ -39,6 +93,12 @@ Output layout: `clips/<robot name>/<YYYY-MM-DD>/<HHMMSS>_<eventType>_<id>.mp4`
   either side of the window and dedupes by clip id, so either way is covered.
 - Whether the list is paginated beyond what's returned. If `clips.json` stops at a
   suspiciously round number, look for a cursor field in the raw response.
+- Activity log: how far back `/activities` goes, whether `offset` paging works (the
+  collector stops if a page repeats), and the exact `wasteType` labels. `--dump`
+  now also writes `activities.json` and `pets.json` so you can check.
+- Clip ↔ visit matching is by time (a visit is logged when the cat leaves, and its
+  clip starts earlier). Tune `MATCH_BEFORE_S` / `MATCH_AFTER_S` if clips line up
+  with the wrong visit. Clips up to 30 minutes away still show as "nearby".
 - Retention: without Whisker+, the app shows 7 days of history, so run this at least
   weekly or clips age out.
 

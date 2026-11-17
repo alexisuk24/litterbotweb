@@ -1,0 +1,364 @@
+"""SQLite store shared by the collector (lr_clips.py) and the web UI (web.py).
+
+All timestamps are stored as UTC epoch seconds (REAL). Weights are pounds.
+Cat corrections live in visit_overrides and never touch the API data, so a
+re-sync can't clobber them.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+DB_PATH = Path(os.environ.get("DB_PATH", "/data/litterrobot.db"))
+
+# Sentinel stored in visit_overrides.pet_id for "not one of my cats / can't tell".
+UNKNOWN_PET = "__unknown__"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS robots (
+    serial           TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    folder           TEXT NOT NULL,
+    timezone         TEXT,
+    model            TEXT,
+    camera_device_id TEXT,
+    raw              TEXT,
+    updated_at       REAL
+);
+CREATE TABLE IF NOT EXISTS pets (
+    pet_id              TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    pet_type            TEXT,
+    gender              TEXT,
+    weight              REAL,
+    last_weight_reading REAL,
+    is_active           INTEGER,
+    image_url           TEXT,
+    created_at          TEXT,
+    raw                 TEXT,
+    updated_at          REAL
+);
+CREATE TABLE IF NOT EXISTS pet_weights (
+    pet_id TEXT NOT NULL,
+    ts     REAL NOT NULL,
+    weight REAL NOT NULL,
+    PRIMARY KEY (pet_id, ts)
+);
+CREATE TABLE IF NOT EXISTS activities (
+    id               TEXT PRIMARY KEY,
+    robot_serial     TEXT NOT NULL,
+    type             TEXT NOT NULL,
+    subtype          TEXT,
+    ts               REAL NOT NULL,
+    pet_weight       REAL,
+    waste_type       TEXT,
+    waste_weight     REAL,
+    duration         REAL,
+    pet_ids          TEXT,
+    camera_event_ids TEXT,
+    raw              TEXT
+);
+CREATE INDEX IF NOT EXISTS activities_ts ON activities (ts);
+CREATE INDEX IF NOT EXISTS activities_type_ts ON activities (type, ts);
+CREATE TABLE IF NOT EXISTS clips (
+    id             TEXT PRIMARY KEY,
+    robot_serial   TEXT,
+    robot_folder   TEXT NOT NULL,
+    ts             REAL NOT NULL,
+    event_type     TEXT,
+    duration_s     REAL,
+    pet_detections TEXT,
+    video_file     TEXT,
+    thumb_file     TEXT,
+    raw            TEXT,
+    keep           INTEGER NOT NULL DEFAULT 0,
+    deleted_at     REAL
+);
+CREATE INDEX IF NOT EXISTS clips_ts ON clips (ts);
+CREATE TABLE IF NOT EXISTS visit_overrides (
+    activity_id TEXT PRIMARY KEY,
+    pet_id      TEXT,
+    ignored     INTEGER NOT NULL DEFAULT 0,
+    note        TEXT,
+    updated_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS robot_snapshots (
+    robot_serial       TEXT NOT NULL,
+    ts                 REAL NOT NULL,
+    litter_level       REAL,
+    waste_drawer_level REAL,
+    scale_weight       REAL,
+    cycle_count        INTEGER,
+    status             TEXT,
+    PRIMARY KEY (robot_serial, ts)
+);
+CREATE TABLE IF NOT EXISTS sync_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+"""
+
+
+def connect(path: Path | str | None = None) -> sqlite3.Connection:
+    path = Path(path or DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.executescript(SCHEMA)
+    _migrate(conn)
+    return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
+    if "keep" not in cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN keep INTEGER NOT NULL DEFAULT 0")
+    if "deleted_at" not in cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN deleted_at REAL")
+    conn.commit()
+
+
+# ------------------------------------------------------------------ parsing
+
+
+def to_epoch(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        return v / 1000 if v > 1e12 else v
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    s = str(value).strip()
+    if s.replace(".", "", 1).isdigit():
+        return to_epoch(float(s))
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return to_epoch(dt)
+
+
+def visit_weight_lbs(raw: Any) -> float | None:
+    """The activities API reports pet weight as pounds * 100 (e.g. 937 = 9.37 lb)."""
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return round(v / 100, 2) if v > 60 else v
+
+
+def hls_duration_s(text: Any) -> float | None:
+    """'01:05' -> 65.0"""
+    if not text:
+        return None
+    try:
+        secs = 0.0
+        for part in str(text).split(":"):
+            secs = secs * 60 + float(part)
+        return secs
+    except ValueError:
+        return None
+
+
+def activity_id(item: dict) -> str:
+    if item.get("messageId"):
+        return str(item["messageId"])
+    key = "|".join(str(item.get(k, "")) for k in ("type", "timestamp", "petWeight", "subtype"))
+    return "h-" + hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
+def _num(v: Any) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ------------------------------------------------------------------ writes
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO sync_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def get_state(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM sync_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def upsert_robot(conn, *, serial, name, folder, timezone_name, model, camera_device_id, raw) -> None:
+    conn.execute(
+        """INSERT INTO robots (serial, name, folder, timezone, model, camera_device_id, raw, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(serial) DO UPDATE SET name=excluded.name, folder=excluded.folder,
+             timezone=excluded.timezone, model=excluded.model,
+             camera_device_id=excluded.camera_device_id, raw=excluded.raw,
+             updated_at=excluded.updated_at""",
+        (serial, name, folder, timezone_name, model, camera_device_id,
+         json.dumps(raw, default=str), time.time()),
+    )
+
+
+def upsert_pet(conn, data: dict) -> None:
+    image = (data.get("profileImage") or {}).get("s3ImageURL")
+    conn.execute(
+        """INSERT INTO pets (pet_id, name, pet_type, gender, weight, last_weight_reading,
+                             is_active, image_url, created_at, raw, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(pet_id) DO UPDATE SET name=excluded.name, pet_type=excluded.pet_type,
+             gender=excluded.gender, weight=excluded.weight,
+             last_weight_reading=excluded.last_weight_reading, is_active=excluded.is_active,
+             image_url=excluded.image_url, created_at=excluded.created_at,
+             raw=excluded.raw, updated_at=excluded.updated_at""",
+        (data.get("petId"), data.get("name") or "Unnamed", data.get("type"), data.get("gender"),
+         _num(data.get("weight")), _num(data.get("lastWeightReading")),
+         1 if data.get("isActive", True) else 0, image, data.get("createdAt"),
+         json.dumps(data, default=str), time.time()),
+    )
+    insert_pet_weights(conn, data.get("petId"), data.get("weightHistory") or [])
+
+
+def insert_pet_weights(conn, pet_id: str, history: Iterable[dict]) -> None:
+    rows = []
+    for h in history:
+        ts, w = to_epoch(h.get("timestamp")), _num(h.get("weight"))
+        if ts is not None and w:
+            rows.append((pet_id, ts, w))
+    conn.executemany("INSERT OR IGNORE INTO pet_weights (pet_id, ts, weight) VALUES (?, ?, ?)", rows)
+
+
+def upsert_activities(conn, robot_serial: str, items: Iterable[dict]) -> tuple[int, list[str]]:
+    """Insert/refresh activities. Returns (newly inserted count, ids seen)."""
+    new, ids = 0, []
+    for item in items:
+        ts = to_epoch(item.get("timestamp"))
+        if ts is None:
+            continue
+        aid = activity_id(item)
+        ids.append(aid)
+        if not conn.execute("SELECT 1 FROM activities WHERE id = ?", (aid,)).fetchone():
+            new += 1
+        conn.execute(
+            """INSERT INTO activities (id, robot_serial, type, subtype, ts, pet_weight, waste_type,
+                                       waste_weight, duration, pet_ids, camera_event_ids, raw)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET pet_weight=excluded.pet_weight,
+                 waste_type=excluded.waste_type, waste_weight=excluded.waste_weight,
+                 duration=excluded.duration, pet_ids=excluded.pet_ids,
+                 camera_event_ids=excluded.camera_event_ids, raw=excluded.raw""",
+            (aid, robot_serial, item.get("type") or "UNKNOWN", item.get("subtype"), ts,
+             visit_weight_lbs(item.get("petWeight")), item.get("wasteType"),
+             _num(item.get("wasteWeight")), _num(item.get("duration")),
+             json.dumps(item.get("petIds") or []), json.dumps(item.get("cameraEventIds") or []),
+             json.dumps(item, default=str)),
+        )
+    return new, ids
+
+
+def upsert_clip(conn, *, clip_id, robot_serial, robot_folder, raw, video_file=None, thumb_file=None) -> None:
+    ts = to_epoch(raw.get("createdAt"))
+    if ts is None:
+        return
+    conn.execute(
+        """INSERT INTO clips (id, robot_serial, robot_folder, ts, event_type, duration_s,
+                              pet_detections, video_file, thumb_file, raw)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             robot_serial=COALESCE(excluded.robot_serial, clips.robot_serial),
+             robot_folder=excluded.robot_folder, ts=excluded.ts, event_type=excluded.event_type,
+             duration_s=excluded.duration_s, pet_detections=excluded.pet_detections,
+             video_file=COALESCE(excluded.video_file, clips.video_file),
+             thumb_file=COALESCE(excluded.thumb_file, clips.thumb_file), raw=excluded.raw""",
+        (str(clip_id), robot_serial, robot_folder, ts, raw.get("eventType"),
+         hls_duration_s(raw.get("hlsDuration")), json.dumps(raw.get("petDetections") or []),
+         video_file, thumb_file, json.dumps(raw, default=str)),
+    )
+
+
+def add_snapshot(conn, *, robot_serial, litter_level, waste_drawer_level, scale_weight, cycle_count, status) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO robot_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (robot_serial, time.time(), litter_level, waste_drawer_level, scale_weight, cycle_count, status),
+    )
+
+
+def is_clip_deleted(conn, clip_id) -> bool:
+    row = conn.execute("SELECT deleted_at FROM clips WHERE id = ?", (str(clip_id),)).fetchone()
+    return bool(row and row["deleted_at"])
+
+
+def apply_retention(conn, clips_root: Path, days: int, log=None) -> int:
+    """Delete clip files (mp4 + jpg + json) older than `days` unless marked keep."""
+    cutoff = time.time() - days * 86400
+    root = clips_root.resolve()
+    rows = conn.execute(
+        "SELECT id, robot_folder, video_file FROM clips WHERE keep = 0 AND deleted_at IS NULL "
+        "AND video_file IS NOT NULL AND ts < ?", (cutoff,)
+    ).fetchall()
+    deleted = 0
+    for r in rows:
+        stem = Path(r["video_file"]).stem
+        folder = (root / r["robot_folder"]).resolve()
+        if not folder.is_relative_to(root):
+            continue
+        try:
+            for ext in (".mp4", ".jpg", ".json"):
+                (folder / f"{stem}{ext}").unlink(missing_ok=True)
+        except OSError as err:
+            if log:
+                log.warning("retention: could not delete %s: %s", r["video_file"], err)
+            continue
+        conn.execute("UPDATE clips SET video_file = NULL, thumb_file = NULL, deleted_at = ? WHERE id = ?",
+                     (time.time(), r["id"]))
+        deleted += 1
+    conn.commit()
+    return deleted
+
+
+def index_clip_files(conn, clips_root: Path) -> int:
+    """Index already-downloaded clips from their JSON sidecars (covers clips that
+    have aged out of the API but are still on disk)."""
+    if not clips_root.is_dir():
+        return 0
+    folders = {r["folder"]: r["serial"] for r in conn.execute("SELECT folder, serial FROM robots")}
+    known = {r["video_file"] for r in conn.execute("SELECT video_file FROM clips WHERE video_file IS NOT NULL")}
+    added = 0
+    for folder in clips_root.iterdir():
+        if not folder.is_dir():
+            continue
+        for mp4 in folder.glob("*.mp4"):
+            if mp4.name.endswith(".part.mp4") or mp4.name in known:
+                continue
+            sidecar = mp4.with_suffix(".json")
+            if not sidecar.exists():
+                continue
+            try:
+                raw = json.loads(sidecar.read_text())
+            except (OSError, ValueError):
+                continue
+            thumb = mp4.with_suffix(".jpg")
+            upsert_clip(conn, clip_id=raw.get("id", mp4.stem), robot_serial=folders.get(folder.name),
+                        robot_folder=folder.name, raw=raw, video_file=mp4.name,
+                        thumb_file=thumb.name if thumb.exists() else None)
+            added += 1
+    return added

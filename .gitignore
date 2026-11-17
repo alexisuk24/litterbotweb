@@ -1,0 +1,4 @@
+static/vendor/
+__pycache__/
+*.db
+*.db-*

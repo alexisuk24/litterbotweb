@@ -1,0 +1,18 @@
+<header class="topnav">
+  <div class="brand"><span style="font-size:1.3rem">🐱</span>Litter Robot</div>
+  <nav>
+    <a href="/events" class="{{ 'active' if page == 'events' }}">Events</a>
+    <a href="/clips" class="{{ 'active' if page == 'clips' }}">Clips</a>
+    <a href="/analysis" class="{{ 'active' if page == 'analysis' }}">Analysis</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="sync">
+    <span id="syncStatus"></span>
+    <button class="btn sync-btn" id="syncBtn" disabled title="Fetch new activity and clips now"><i>⟳</i><span>Refresh</span></button>
+  </div>
+  {% if page != 'clips' %}
+  <div class="unit-toggle" id="unitToggle" title="Weight unit">
+    <button data-unit="lb">lb</button><button data-unit="kg">kg</button>
+  </div>
+  {% endif %}
+</header>
