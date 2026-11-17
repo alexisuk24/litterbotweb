@@ -87,10 +87,20 @@ CREATE TABLE IF NOT EXISTS whisker_pushes (
     updated_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS whisker_pushes_activity ON whisker_pushes (activity_id, id);
+CREATE TABLE IF NOT EXISTS firmware_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    robot_serial TEXT NOT NULL,
+    component    TEXT NOT NULL,
+    version      TEXT NOT NULL,
+    previous     TEXT,
+    seen_at      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS firmware_history_robot ON firmware_history (robot_serial, component, id);
 CREATE TABLE IF NOT EXISTS robot_commands (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     robot_serial TEXT NOT NULL,
     command      TEXT NOT NULL,
+    arg          TEXT,
     status       TEXT NOT NULL DEFAULT 'pending',
     error        TEXT,
     created_at   REAL NOT NULL,
@@ -158,6 +168,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # "ignore this visit" was removed; un-ignore anything still flagged so it counts again
     conn.execute("UPDATE visit_overrides SET ignored = 0 WHERE ignored != 0")
     conn.execute("DELETE FROM visit_overrides WHERE pet_id IS NULL AND COALESCE(note, '') = ''")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(robot_commands)")}
+    if "arg" not in cols:
+        conn.execute("ALTER TABLE robot_commands ADD COLUMN arg TEXT")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(pets)")}
     if "photo_file" not in cols:
         conn.execute("ALTER TABLE pets ADD COLUMN photo_file TEXT")
@@ -350,6 +363,14 @@ def writeback_enabled(conn) -> bool:
     return get_state(conn, "writeback") != "0"  # on unless switched off in Settings
 
 
+# Whisker rejects reassigning visits older than this
+WHISKER_EDIT_WINDOW_S = 7 * 86400
+
+
+def whisker_editable(ts: float) -> bool:
+    return ts >= time.time() - WHISKER_EDIT_WINDOW_S
+
+
 def first_pet(pet_ids_json: str | None) -> str | None:
     ids = json.loads(pet_ids_json or "[]")
     return ids[0] if ids else None
@@ -397,18 +418,54 @@ ROBOT_COMMANDS = {
 def set_robot_info(conn, serial: str, info: dict) -> None:
     conn.execute("UPDATE robots SET info = ?, info_at = ? WHERE serial = ?",
                  (json.dumps(info, default=str), time.time(), serial))
+    record_firmware(conn, serial, info.get("firmware"))
 
 
-def enqueue_command(conn, serial: str, command: str) -> int:
+def parse_firmware(text: str | None) -> dict[str, str]:
+    """'ESP: 1.4.2 / MCU: 2.1.0 / CAM: 1.2.2' -> {'ESP': '1.4.2', 'MCU': '2.1.0', 'CAM': '1.2.2'}"""
+    out = {}
+    for part in (text or "").split("/"):
+        name, sep, version = part.partition(":")
+        if sep and name.strip() and version.strip():
+            out[name.strip()] = version.strip()
+    return out
+
+
+def record_firmware(conn, serial: str, firmware: str | None) -> None:
+    """Log each firmware component whose version differs from the last one recorded.
+    The first sighting of a component has previous = NULL (its install date is unknown)."""
+    for component, version in parse_firmware(firmware).items():
+        last = conn.execute("SELECT version FROM firmware_history WHERE robot_serial = ? AND component = ? "
+                            "ORDER BY id DESC LIMIT 1", (serial, component)).fetchone()
+        if last and last["version"] == version:
+            continue
+        conn.execute("INSERT INTO firmware_history (robot_serial, component, version, previous, seen_at) "
+                     "VALUES (?, ?, ?, ?, ?)", (serial, component, version, last["version"] if last else None, time.time()))
+
+
+def enqueue_command(conn, serial: str, command: str, arg: str | None = None) -> int:
     now = time.time()
-    cur = conn.execute("INSERT INTO robot_commands (robot_serial, command, status, created_at, updated_at) "
-                       "VALUES (?, ?, 'pending', ?, ?)", (serial, command, now, now))
+    cur = conn.execute("INSERT INTO robot_commands (robot_serial, command, arg, status, created_at, updated_at) "
+                       "VALUES (?, ?, ?, 'pending', ?, ?)", (serial, command, arg, now, now))
     return cur.lastrowid
 
 
-def active_command(conn, serial: str, command: str):
-    return conn.execute("SELECT * FROM robot_commands WHERE robot_serial = ? AND command = ? "
-                        "AND status IN ('pending', 'sending') ORDER BY id DESC LIMIT 1", (serial, command)).fetchone()
+def active_command(conn, serial: str, command: str, arg: str | None = None):
+    return conn.execute("SELECT * FROM robot_commands WHERE robot_serial = ? AND command = ? AND arg IS ? "
+                        "AND status IN ('pending', 'sending') ORDER BY id DESC LIMIT 1",
+                        (serial, command, arg)).fetchone()
+
+
+def clip_download_status(conn, clip_ids) -> dict:
+    """Latest (re-)download request per clip id."""
+    ids = [str(i) for i in clip_ids]
+    if not ids:
+        return {}
+    out = {}
+    for r in conn.execute(f"SELECT arg, status, error, updated_at FROM robot_commands WHERE command = 'redownload' "
+                          f"AND arg IN ({','.join('?' * len(ids))}) ORDER BY id", ids):
+        out[r["arg"]] = {"status": r["status"], "error": r["error"], "updated": r["updated_at"]}
+    return out
 
 
 def has_pending_commands(conn) -> bool:

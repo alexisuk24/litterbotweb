@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Events · Litter Robot</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "_head.html" %}
 <style>
 .layout { display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
 .layout > * { min-width: 0; }
@@ -16,6 +17,26 @@
   .ev { padding-inline: .75rem; }
 }
 
+.more-filters { display: contents; }
+.seg .short { display: none; }
+.filt-btn { display: none; }
+.filt-n { display: inline-block; min-width: 1.2rem; padding: 0 .3rem; border-radius: 999px; background: var(--accent); color: #fff; font-size: .72rem; text-align: center; }
+.dl { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; color: var(--muted); }
+#count { font-size: .85rem; margin-left: auto; }
+@media (max-width: 600px) {
+  .toolbar { gap: .5rem; margin-bottom: .75rem; }
+  .toolbar .seg { flex: 1; }
+  .toolbar .seg button { flex: 1; padding-inline: .4rem; white-space: nowrap; }
+  .seg .long { display: none; }
+  .seg .short { display: inline; }
+  .filt-btn { display: inline-flex; align-items: center; gap: .35rem; }
+  .more-filters { display: none; }
+  .more-filters.open { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; width: 100%; }
+  .more-filters select, .more-filters .dl input { width: 100%; min-width: 0; }
+  .more-filters .dl { display: grid; gap: .2rem; }
+  #clearFilters { grid-column: 1 / -1; }
+  #count { display: none; }
+}
 .list { max-height: calc(100vh - 170px); overflow-y: auto; }
 @media (max-width: 860px) { .list { max-height: none; } }
 .day-head { position: sticky; top: 0; background: var(--surface); padding: .55rem 1rem; font-size: .7rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; z-index: 1; }
@@ -41,6 +62,8 @@
 .strip .c.far { opacity: .6; }
 .strip .sep { align-self: center; font-size: .7rem; color: var(--muted); writing-mode: vertical-rl; transform: rotate(180deg); }
 
+.dl-status { font-size: .78rem; }
+.dl-status.busy { color: var(--text2); } .dl-status.ok { color: var(--teal); } .dl-status.err { color: var(--warn); }
 .keepbar { display: flex; align-items: center; gap: .75rem; padding: .6rem 1rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .75rem 1rem; padding: 1rem; border-bottom: 1px solid var(--border); }
 .fact .k { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
@@ -73,17 +96,21 @@
 {% include "_nav.html" %}
 <div class="page">
   <div class="toolbar">
-    <select id="fType" aria-label="Event type"></select>
-    <select id="fPet" aria-label="Cat"></select>
     <div class="seg" id="fFilter">
       <button data-v="" class="on">All</button>
-      <button data-v="review">Needs review</button>
+      <button data-v="review"><span class="long">Needs review</span><span class="short">Review</span></button>
       <button data-v="corrected">Edited</button>
     </div>
-    <input type="date" id="fFrom" aria-label="From date">
-    <input type="date" id="fTo" aria-label="To date">
-    <select id="fRobot" aria-label="Robot" hidden></select>
-    <span class="muted" id="count" style="font-size:.85rem;margin-left:auto"></span>
+    <button class="btn filt-btn" id="filtBtn" aria-expanded="false" aria-controls="moreFilters">Filters <span class="filt-n" id="filtN" hidden></span></button>
+    <div class="more-filters" id="moreFilters">
+      <select id="fType" aria-label="Event type"></select>
+      <select id="fPet" aria-label="Cat"></select>
+      <label class="dl"><span>From</span><input type="date" id="fFrom"></label>
+      <label class="dl"><span>To</span><input type="date" id="fTo"></label>
+      <select id="fRobot" aria-label="Robot" hidden></select>
+      <button class="btn" id="clearFilters" hidden>Clear filters</button>
+    </div>
+    <span class="muted" id="count"></span>
   </div>
   <div class="layout">
     <div class="card list" id="list"><div class="empty">Loading…</div></div>
@@ -94,8 +121,8 @@
     </div>
   </div>
 </div>
-<script src="/static/common.js"></script>
-<script src="/static/events.js"></script>
-<script src="/static/sync.js"></script>
+<script src="{{ asset('common.js') }}"></script>
+<script src="{{ asset('events.js') }}"></script>
+<script src="{{ asset('sync.js') }}"></script>
 </body>
 </html>

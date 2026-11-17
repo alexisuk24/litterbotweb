@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Analysis · Litter Robot</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "_head.html" %}
 <style>
 .grid { display: grid; gap: 1rem; grid-template-columns: repeat(12, 1fr); }
 .span-12 { grid-column: span 12; } .span-8 { grid-column: span 8; } .span-6 { grid-column: span 6; } .span-4 { grid-column: span 4; }
@@ -63,9 +64,9 @@ table.mix td.n { text-align: right; font-variant-numeric: tabular-nums; }
   </div>
   <div id="root"><div class="empty">Loading…</div></div>
 </div>
-<script src="/static/vendor/chart.umd.min.js"></script>
-<script src="/static/common.js"></script>
-<script src="/static/analysis.js"></script>
-<script src="/static/sync.js"></script>
+<script src="{{ asset('vendor/chart.umd.min.js') }}"></script>
+<script src="{{ asset('common.js') }}"></script>
+<script src="{{ asset('analysis.js') }}"></script>
+<script src="{{ asset('sync.js') }}"></script>
 </body>
 </html>

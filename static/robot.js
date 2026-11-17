@@ -75,8 +75,9 @@ function render() {
       <div class="card panel">
         <h2>Firmware</h2>
         <div class="fw">
-          <div><code>${esc(i.firmware || 'unknown')}</code></div>
-          <div style="margin-top:.4rem">Update status: ${i.firmware_updating ? '<b>updating now</b>' : esc(titleCase(i.firmware_status))}</div>
+          ${firmwareTable(d.firmware, i.firmware)}
+          <div style="margin-top:.6rem">Update status: ${i.firmware_updating ? '<b>updating now</b>' : esc(titleCase(i.firmware_status))}</div>
+          ${firmwareHistory(d.firmware)}
           <div class="note">Firmware updates have to be installed from the Whisker app. Whisker's API for the Litter-Robot 5 can't start an update or report whether one is available.</div>
         </div>
       </div>
@@ -86,6 +87,29 @@ function render() {
       </div>
     </div>
   </div>`;
+}
+
+const FW_NAMES = { ESP: 'Wi-Fi module', MCU: 'Main controller', CAM: 'Camera', EDGE: 'Edge processor', AI: 'AI model' };
+const fwName = c => FW_NAMES[c] || c;
+const day = ts => new Date(ts * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+
+function firmwareTable(history, raw) {
+  const current = {};
+  for (const f of history) if (!current[f.component]) current[f.component] = f;  // newest first
+  const rows = Object.values(current);
+  if (!rows.length) return `<div><code>${esc(raw || 'unknown')}</code></div>`;
+  return `<table class="fwt">${rows.map(f => `<tr><td>${esc(fwName(f.component))}</td><td><code>${esc(f.version)}</code></td>
+    <td class="muted">${f.previous ? `updated ${esc(day(f.at))}` : `since ${esc(day(f.at))} or earlier`}</td></tr>`).join('')}</table>`;
+}
+
+function firmwareHistory(history) {
+  const updates = history.filter(f => f.previous);
+  if (!history.length) return '';
+  const since = Math.min(...history.map(f => f.at));
+  if (!updates.length) return `<div class="fwh-empty">No updates seen since tracking began on ${esc(day(since))}.</div>`;
+  return `<div class="fwh"><div class="fwh-title">Update history</div>${updates.map(f =>
+    `<div><span class="t">${esc(when(f.at))}</span><span>${esc(fwName(f.component))} <code>${esc(f.previous)}</code> → <code>${esc(f.version)}</code></span></div>`
+  ).join('')}<div class="fwh-empty">Tracking since ${esc(day(since))}.</div></div>`;
 }
 
 function tile(k, v, sub, bar, warn) {

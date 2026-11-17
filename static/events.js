@@ -47,8 +47,18 @@ function buildFilters() {
 
   const bind = (id, key) => el(id).addEventListener('change', e => { s.f[key] = e.target.value; reload(); });
   bind('fType', 'type'); bind('fPet', 'pet'); bind('fFrom', 'from'); bind('fTo', 'to'); bind('fRobot', 'robot');
+  el('filtBtn').addEventListener('click', () => {
+    const open = el('moreFilters').classList.toggle('open');
+    el('filtBtn').setAttribute('aria-expanded', open);
+  });
+  el('clearFilters').addEventListener('click', () => {
+    Object.assign(s.f, { type: 'PET_VISIT', pet: '', from: '', to: '', robot: '' });
+    el('fType').value = 'PET_VISIT'; el('fPet').value = ''; el('fFrom').value = ''; el('fTo').value = '';
+    if (!el('fRobot').hidden) el('fRobot').value = '';
+    reload();
+  });
   el('fFilter').addEventListener('click', e => {
-    const v = e.target.dataset.v;
+    const v = e.target.closest('button')?.dataset.v;
     if (v === undefined) return;
     s.f.filter = v;
     el('fFilter').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
@@ -64,8 +74,16 @@ async function fetchPage(page) {
   return api(`/api/events?${p}`);
 }
 
+function paintFilterCount() {
+  const n = [s.f.type !== 'PET_VISIT', s.f.pet, s.f.from, s.f.to, s.f.robot].filter(Boolean).length;
+  el('filtN').textContent = n;
+  el('filtN').hidden = !n;
+  el('clearFilters').hidden = !n;
+}
+
 async function reload() {
   writeUrl();
+  paintFilterCount();
   el('list').innerHTML = '<div class="empty">Loading…</div>';
   try {
     const r = await fetchPage(0);
@@ -153,26 +171,82 @@ async function select(id, { scroll = true } = {}) {
   }
   if (s.active !== id) return;
   s.clipIdx = Math.max(0, s.detail.clips.findIndex(c => c.video));
+  const busyClip = s.detail.clips.find(dlBusy);
+  if (busyClip) watchDownload(busyClip.id);
   const wasIdle = el('detail').classList.contains('idle');
   el('detail').classList.remove('idle');
   renderDetail();
   if (matchMedia('(max-width: 860px)').matches && (scroll || wasIdle)) el('detail').scrollIntoView({ behavior: 'smooth' });
 }
 
+const dlBusy = c => c && c.download && (c.download.status === 'pending' || c.download.status === 'sending');
+
+function downloadStatus(c) {
+  const d = c.download;
+  if (!d) return '';
+  if (dlBusy(c)) return '<span class="dl-status busy">⟳ Downloading from Whisker…</span>';
+  if (d.status === 'error') return `<span class="dl-status err">⚠ ${esc(d.error || 'Download failed')}</span>`;
+  if (Date.now() / 1000 - d.updated < 600) return '<span class="dl-status ok">✓ Downloaded again</span>';
+  return '';
+}
+
 function keepBar(c) {
-  if (!c || !c.video) return '';
-  const when = c.keep ? 'Kept forever' : c.expires ? `Auto-deletes ${expiryText(c.expires)}` : '';
-  return `<div class="keepbar"><button class="btn keep-btn${c.keep ? ' on' : ''}" id="keepBtn" data-id="${esc(c.id)}">📌 ${c.keep ? 'Kept' : 'Keep forever'}</button><span class="expiry">${esc(when)}</span></div>`;
+  if (!c) return '';
+  const busy = dlBusy(c);
+  const label = c.video ? '↻ Re-download' : '⬇ Download now';
+  const dl = `<button class="btn" id="dlBtn" ${busy ? 'disabled' : ''} title="Fetch a fresh copy of this clip from Whisker">${busy ? 'Downloading…' : label}</button>`;
+  const keep = c.video
+    ? `<button class="btn keep-btn${c.keep ? ' on' : ''}" id="keepBtn" data-id="${esc(c.id)}">📌 ${c.keep ? 'Kept' : 'Keep forever'}</button>` : '';
+  const when = c.video ? (c.keep ? 'Kept forever' : c.expires ? `Auto-deletes ${expiryText(c.expires)}` : '') : '';
+  return `<div class="keepbar">${keep}${dl}<span class="expiry">${esc(when)}</span>${downloadStatus(c)}</div>`;
 }
 
 function renderPlayer() {
   const c = s.detail.clips[s.clipIdx];
   let body;
   if (!c) body = `<div class="novideo"><div class="empty-icon">📹</div>No camera clip recorded near this event</div>`;
-  else if (c.deleted) body = `<div class="novideo"><div class="empty-icon">🗑</div>This clip was deleted by the retention schedule</div>`;
-  else if (!c.video) body = `<div class="novideo"><div class="empty-icon">⏳</div>This clip hasn't been downloaded yet<br><span style="font-size:.75rem">The downloader picks it up on its next run.</span></div>`;
+  else if (c.deleted && !c.video) body = `<div class="novideo"><div class="empty-icon">🗑</div>This clip was deleted by the retention schedule</div>`;
+  else if (!c.video) body = `<div class="novideo"><div class="empty-icon">⏳</div>This clip hasn't been downloaded yet<br><span style="font-size:.75rem">The downloader picks it up on its next run, or use Download now.</span></div>`;
   else body = `<video controls autoplay muted playsinline preload="metadata" src="${esc(c.video)}"></video>`;
   return `<div id="playerWrap">${body}${keepBar(c)}</div>`;
+}
+
+let dlPoll = null;
+async function requestDownload() {
+  const c = s.detail?.clips[s.clipIdx];
+  if (!c || dlBusy(c)) return;
+  try {
+    const r = await fetch(`/api/clips/${encodeURIComponent(c.id)}/download`, { method: 'POST' });
+    const body = await r.json();
+    c.download = body.download || { status: 'error', error: "Couldn't start the download", updated: Date.now() / 1000 };
+  } catch {
+    c.download = { status: 'error', error: "Couldn't reach the server", updated: Date.now() / 1000 };
+  }
+  el('playerWrap').querySelector('.keepbar').outerHTML = keepBar(c);
+  watchDownload(c.id);
+}
+
+// Poll until the download finishes, then swap in the fresh video (its URL changes with the file).
+function watchDownload(clipId) {
+  clearTimeout(dlPoll);
+  const eventId = s.active;
+  dlPoll = setTimeout(async () => {
+    if (s.active !== eventId) return;
+    let r;
+    try { r = await api(`/api/events/${encodeURIComponent(eventId)}`); } catch { return watchDownload(clipId); }
+    if (s.active !== eventId) return;
+    const fresh = r.clips.find(x => x.id === clipId);
+    const i = s.detail.clips.findIndex(x => x.id === clipId);
+    if (!fresh || i === -1) return;
+    s.detail.clips[i] = fresh;
+    if (dlBusy(fresh)) {
+      if (i === s.clipIdx) el('playerWrap').querySelector('.keepbar').outerHTML = keepBar(fresh);
+      return watchDownload(clipId);
+    }
+    if (i === s.clipIdx) el('playerWrap').outerHTML = renderPlayer();
+    const strip = el('strip')?.querySelector(`.c[data-i="${i}"] .img`);
+    if (strip && fresh.thumb) { strip.style.backgroundImage = `url('${fresh.thumb}')`; strip.textContent = ''; }
+  }, 2000);
 }
 
 async function toggleKeep() {
@@ -207,6 +281,8 @@ function pushStatus(v) {
   const target = esc(p.to_pet ? petName(p.to_pet) : 'no cat');
   if (p.status === 'pending' || p.status === 'sending')
     return `<div class="push pending">⟳ Sending to Whisker: ${target}…</div>`;
+  if (p.status === 'error' && !v.whisker_editable)
+    return `<div class="push err">⚠ Not changed in Whisker: it only accepts changes to visits from the last 7 days. Your correction is saved here.</div>`;
   if (p.status === 'error')
     return `<div class="push err">⚠ Whisker update failed: ${esc(p.error || 'unknown error')} <button class="btn" id="retryBtn">Retry</button></div>`;
   return `<div class="push ok">✓ Updated in the Whisker app (${target})</div>`;
@@ -236,6 +312,7 @@ function pickHtml(v) {
   const recorded = `Robot recorded: ${esc(v.api_pet ? petName(v.api_pet) : 'no cat')}` +
     (v.whisker_pet !== v.api_pet ? ` · Whisker now: ${esc(v.whisker_pet ? petName(v.whisker_pet) : 'no cat')}` : '');
   const wb = s.meta.writeback;
+  const tooOld = wb && v.whisker_editable === false;
   return `<div class="section">
     <h3><span>Who was this?</span><span class="saved" id="saved">Saved</span></h3>
     ${callout}
@@ -246,8 +323,9 @@ function pickHtml(v) {
     </div>
     ${pushStatus(v)}
     <div style="margin-top:.75rem"><textarea class="note" id="note" placeholder="Note (optional), e.g. 'both cats in at once'">${esc(v.note)}</textarea></div>
-    <div class="hint">${wb
-      ? 'Cat changes are also sent to the Whisker app; notes stay here.'
+    <div class="hint">${tooOld
+      ? 'This visit is more than 7 days old, so Whisker won\'t accept changes to it. Corrections are saved in this app only.'
+      : wb ? 'Cat changes are also sent to the Whisker app; notes stay here.'
       : 'Edits are kept in this app only; Whisker sync is off.'}
       <a href="/settings" style="color:inherit">Change in Settings</a>.</div>
   </div>`;
@@ -357,6 +435,7 @@ document.addEventListener('keydown', e => {
 el('detail').addEventListener('click', async e => {
   const t = e.target;
   if (t.closest('#keepBtn')) toggleKeep();
+  else if (t.closest('#dlBtn')) requestDownload();
   else if (t.closest('#revertBtn')) revert();
   else if (t.closest('#retryBtn')) {
     const id = s.active;

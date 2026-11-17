@@ -19,7 +19,8 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   reverts are also sent to your Whisker account (switch this off on the **Settings**
   page), which corrects that cat's weight history
   there too. The collector sends them within a few seconds and the page shows
-  whether Whisker accepted each one. Notes always stay local.
+  whether Whisker accepted each one. Whisker only accepts changes to visits from the
+  last 7 days, so older corrections are kept locally and not sent. Notes always stay local.
 - **Clips**: the calendar browser for downloaded clips.
 - **Analysis**: insights (visit-frequency changes, weight changes of 5% or more,
   cats that haven't visited, offline events), per-cat cards, visits per day, weight
@@ -32,7 +33,14 @@ Analysis uses your corrections.
 cycle counts, filter date, Wi-Fi and firmware, plus actions to start a clean cycle,
 reset the waste drawer gauge after emptying it, and remote-reset the robot (each asks
 for confirmation). Firmware updates aren't possible from here; Whisker's LR5 API has no
-endpoint for them, so use the Whisker app.
+endpoint for them, so use the Whisker app. The firmware card shows each component's version and a history of
+updates, recorded from when this version of the app first ran (changes are noticed at the
+next sync).
+
+**↻ Re-download** (under the player on Events and Clips) fetches a fresh copy of a clip
+from Whisker if the local one looks wrong; the old file is only replaced once the new
+download succeeds. Clips that haven't downloaded yet show **Download now**. This only
+works while Whisker still has the clip (about 7 days without Whisker+).
 
 **Settings** has the Whisker sync switch and the weight unit (kg by default, or lb).
 

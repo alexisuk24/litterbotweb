@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Clips · Litter Robot</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "_head.html" %}
 <style>
 :root {
   --bg: #0f1117; --surface: #1a1d27; --surface2: #252836;
@@ -196,7 +197,7 @@ function playVideo(idx) {
   s.activeIdx = idx;
   renderClipList();
   const v = s.videos[idx];
-  const url = `/video/${enc(s.robot)}/${enc(v.filename)}`;
+  const url = `/video/${enc(s.robot)}/${enc(v.filename)}${v.v ? `?v=${v.v}` : ''}`;
   const [y,m,d] = s.selDate.split('-');
   el('player').innerHTML = `
     <video controls autoplay playsinline preload="metadata" src="${url}"></video>
@@ -208,11 +209,14 @@ function playVideo(idx) {
         <div class="share-row">
           <button class="share-btn" id="shareBtn" onclick="shareClip()">Share &#8599;</button>
           ${keepButton(v)}
+          ${dlButton(v)}
         </div>
         <div class="player-sub" id="keepNote">${keepNote(v)}</div>
+        <div class="player-sub" id="dlNote">${dlNote(v)}</div>
       </div>
       <button class="nav-btn" onclick="playVideo(${idx+1})" ${idx + 1 >= s.videos.length ? 'disabled' : ''}>&#8250;</button>
     </div>`;
+  if (dlBusy(v)) watchDownload(v.filename);
   const vid = el('player').querySelector('video');
   if (vid && idx + 1 < s.videos.length) {
     vid.addEventListener('ended', () => playVideo(idx + 1));
@@ -224,6 +228,56 @@ function keepButton(v) {
   return `<button class="share-btn${v.keep ? ' on' : ''}" id="keepBtn" onclick="toggleKeep()">📌 ${v.keep ? 'Kept forever' : 'Keep forever'}</button>`;
 }
 const keepNote = v => v.keep ? '' : v.expires ? `Auto-deletes ${expiryText(v.expires)}` : '';
+
+const dlBusy = v => v.download && (v.download.status === 'pending' || v.download.status === 'sending');
+function dlButton(v) {
+  if (!v.id) return '';
+  const busy = dlBusy(v);
+  return `<button class="share-btn" id="dlBtn" onclick="requestDownload()" ${busy ? 'disabled' : ''} title="Fetch a fresh copy of this clip from Whisker">${busy ? 'Downloading…' : '↻ Re-download'}</button>`;
+}
+function dlNote(v) {
+  const d = v.download;
+  if (!d) return '';
+  if (dlBusy(v)) return 'Downloading a fresh copy from Whisker…';
+  if (d.status === 'error') return `<span style="color:var(--warn)">⚠ ${esc(d.error || 'Download failed')}</span>`;
+  if (Date.now() / 1000 - d.updated < 600) return '<span style="color:var(--teal)">✓ Downloaded again</span>';
+  return '';
+}
+function paintDownload(v) {
+  if (el('dlBtn')) el('dlBtn').outerHTML = dlButton(v);
+  el('dlNote').innerHTML = dlNote(v);
+}
+
+let dlTimer = null;
+async function requestDownload() {
+  const v = s.videos[s.activeIdx];
+  if (!v || !v.id || dlBusy(v)) return;
+  try {
+    const r = await fetch(`/api/clips/${enc(v.id)}/download`, { method: 'POST' });
+    v.download = (await r.json()).download || { status: 'error', error: "Couldn't start the download", updated: Date.now() / 1000 };
+  } catch {
+    v.download = { status: 'error', error: "Couldn't reach the server", updated: Date.now() / 1000 };
+  }
+  paintDownload(v);
+  watchDownload(v.filename);
+}
+
+// Poll until the download finishes, then reload the player with the fresh file.
+function watchDownload(filename) {
+  clearTimeout(dlTimer);
+  const robot = s.robot, date = s.selDate;
+  dlTimer = setTimeout(async () => {
+    if (s.robot !== robot || s.selDate !== date) return;
+    let list;
+    try { list = await api(`/api/videos/${enc(robot)}/${date}`); } catch { return watchDownload(filename); }
+    const fresh = list.find(x => x.filename === filename);
+    const i = s.videos.findIndex(x => x.filename === filename);
+    if (!fresh || i === -1) return;
+    s.videos[i] = fresh;
+    if (dlBusy(fresh)) { if (i === s.activeIdx) paintDownload(fresh); return watchDownload(filename); }
+    if (i === s.activeIdx) playVideo(i); else renderClipList();
+  }, 2000);
+}
 
 async function toggleKeep() {
   const v = s.videos[s.activeIdx];
@@ -253,7 +307,7 @@ window.addEventListener('lr-synced', refreshClips);
 async function shareClip() {
   const v = s.videos[s.activeIdx];
   if (!v) return;
-  const videoUrl = `/video/${enc(s.robot)}/${enc(v.filename)}`;
+  const videoUrl = `/video/${enc(s.robot)}/${enc(v.filename)}${v.v ? `?v=${v.v}` : ''}`;
   const btn = el('shareBtn');
   const origText = btn ? btn.textContent : '';
 
@@ -289,6 +343,6 @@ el('next').onclick = () => { if (++s.month > 11) { s.month=0; s.year++; } render
 
 init();
 </script>
-<script src="/static/sync.js"></script>
+<script src="{{ asset('sync.js') }}"></script>
 </body>
 </html>

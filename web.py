@@ -74,6 +74,27 @@ def _inject_unit():
     return {"weight_unit": weight_unit()}
 
 
+@app.after_request
+def _no_cache_pages(resp):
+    if resp.mimetype == "text/html":
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
+_asset_versions: dict[str, str] = {}
+
+
+@app.template_global()
+def asset(path: str) -> str:
+    """Static URL with a content hash, so a new release is never served from a stale
+    cache (browser, reverse proxy or CDN) under the old URL."""
+    if path not in _asset_versions:
+        f = Path(app.static_folder) / path
+        _asset_versions[path] = hashlib.sha1(f.read_bytes()).hexdigest()[:10] if f.is_file() else ""
+    v = _asset_versions[path]
+    return f"/static/{path}?v={v}" if v else f"/static/{path}"
+
+
 @app.route("/")
 def index():
     if request.args.get("robot"):  # old share links pointed at the clips page on /
@@ -150,6 +171,9 @@ def api_robot(serial):
         last_24h={"visits": counts.get("PET_VISIT", 0), "cycles": counts.get("CYCLE_COMPLETED", 0)},
         last_visit=last_visit, recent=recent, latest=latest,
         history=[c for c in commands if c["command"] != "refresh"][:6],
+        firmware=[{"component": f["component"], "version": f["version"], "previous": f["previous"],
+                   "at": f["seen_at"]} for f in conn.execute(
+            "SELECT * FROM firmware_history WHERE robot_serial = ? ORDER BY seen_at DESC, id DESC", (serial,))],
     )
 
 
@@ -169,6 +193,31 @@ def api_robot_command(serial):
     cid = lr_db.enqueue_command(conn, serial, command)
     conn.commit()
     return jsonify(command=_command_json(conn.execute("SELECT * FROM robot_commands WHERE id = ?", (cid,)).fetchone())), 202
+
+
+@app.route("/manifest.webmanifest")
+def manifest():
+    icon = lambda f, size, purpose="any": {"src": asset(f"icons/{f}"), "sizes": size, "type": "image/png",
+                                           "purpose": purpose}
+    resp = jsonify({
+        "name": "Litter Robot", "short_name": "Litter Robot", "id": "/", "start_url": "/events", "scope": "/",
+        "display": "standalone", "background_color": "#0f1117", "theme_color": "#1a1d27",
+        "icons": [icon("icon-192.png", "192x192"), icon("icon-512.png", "512x512"),
+                  icon("icon-maskable-512.png", "512x512", "maskable")],
+    })
+    resp.mimetype = "application/manifest+json"
+    return resp
+
+
+@app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    return send_file(Path(app.static_folder) / "icons" / "apple-touch-icon.png", max_age=86400)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_file(Path(app.static_folder) / "icons" / "favicon-32.png", mimetype="image/png", max_age=86400)
 
 
 @app.route("/static/vendor/chart.umd.min.js")
@@ -339,16 +388,29 @@ def clip_rows(start: float, end: float):
     ).fetchall()
 
 
-def clip_json(c, event_ts=None, event_duration=None, camera_ids=()):
+def media_url(kind: str, folder: str, filename: str | None) -> str | None:
+    """Video/thumbnail URL tagged with the file's mtime, so a re-downloaded clip is
+    never served from a stale browser or CDN cache under the old URL."""
+    if not filename:
+        return None
+    try:
+        v = int((CLIPS / folder / filename).stat().st_mtime)
+    except OSError:
+        v = 0
+    return f"/{kind}/{folder}/{filename}?v={v}"
+
+
+def clip_json(c, event_ts=None, event_duration=None, camera_ids=(), downloads=None):
     folder = c["robot_folder"]
     offset = c["ts"] - event_ts if event_ts is not None else None
     in_window = offset is not None and -MATCH_BEFORE_S - (event_duration or 0) <= offset <= MATCH_AFTER_S
     return {
         "id": c["id"], "ts": c["ts"], "offset_s": offset, "event_type": c["event_type"],
         "duration_s": c["duration_s"], "pet_detections": json.loads(c["pet_detections"] or "[]"),
-        "video": f"/video/{folder}/{c['video_file']}" if c["video_file"] else None,
-        "thumb": f"/media/{folder}/{c['thumb_file']}" if c["thumb_file"] else None,
+        "video": media_url("video", folder, c["video_file"]),
+        "thumb": media_url("media", folder, c["thumb_file"]),
         "match": in_window or str(c["id"]) in {str(x) for x in camera_ids},
+        "download": (downloads or {}).get(str(c["id"])),
         **keep_fields(c),
     }
 
@@ -359,6 +421,25 @@ def keep_fields(c):
         "keep": bool(c["keep"]), "deleted": bool(c["deleted_at"]),
         "expires": c["ts"] + days * 86400 if days and not c["keep"] and not c["deleted_at"] else None,
     }
+
+
+@app.route("/api/clips/<clip_id>/download", methods=["POST"])
+def api_download_clip(clip_id):
+    """Queue a fresh download of this clip from Whisker (replacing the local copy)."""
+    conn = db()
+    c = conn.execute("SELECT c.id, COALESCE(c.robot_serial, r.serial) AS serial FROM clips c "
+                     "LEFT JOIN robots r ON r.folder = c.robot_folder WHERE c.id = ?", (clip_id,)).fetchone()
+    if not c:
+        abort(404)
+    if not c["serial"]:
+        return jsonify(reason="unknown_robot"), 400
+    conn.execute("BEGIN IMMEDIATE")
+    if lr_db.active_command(conn, c["serial"], "redownload", str(clip_id)):
+        conn.rollback()
+        return jsonify(reason="in_progress", download=lr_db.clip_download_status(conn, [clip_id]).get(str(clip_id))), 409
+    lr_db.enqueue_command(conn, c["serial"], "redownload", str(clip_id))
+    conn.commit()
+    return jsonify(download=lr_db.clip_download_status(conn, [clip_id]).get(str(clip_id))), 202
 
 
 @app.route("/api/clips/<clip_id>/keep", methods=["POST"])
@@ -386,7 +467,7 @@ def attach_clip_summary(visits):
         matched = [c for c in rows[a:b] if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
         v["clip_count"] = len(matched)
         best = min(matched, key=lambda c: abs(c["ts"] - (v["ts"] - (v["duration"] or 0))), default=None)
-        v["thumb"] = f"/media/{best['robot_folder']}/{best['thumb_file']}" if best and best["thumb_file"] else None
+        v["thumb"] = media_url("media", best["robot_folder"], best["thumb_file"]) if best else None
 
 
 # ------------------------------------------------------------ events API
@@ -457,6 +538,7 @@ def _one_event(event_id):
     p = lr_db.latest_push(db(), event_id)
     v["push"] = ({"status": p["status"], "error": p["error"], "to_pet": p["to_pet"], "at": p["updated_at"]}
                  if p else None)
+    v["whisker_editable"] = lr_db.whisker_editable(v["ts"])
     pets = load_pets()
     return annotate(v, reference_weights(pets), {p["id"] for p in pets if p["active"]})
 
@@ -465,8 +547,9 @@ def _one_event(event_id):
 def api_event(event_id):
     v = _one_event(event_id)
     rows = clip_rows(v["ts"] - NEARBY_S, v["ts"] + NEARBY_S)
-    clips = [clip_json(c, v["ts"], v["duration"], v["camera_event_ids"]) for c in rows
-             if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
+    rows = [c for c in rows if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
+    downloads = lr_db.clip_download_status(db(), [c["id"] for c in rows])
+    clips = [clip_json(c, v["ts"], v["duration"], v["camera_event_ids"], downloads) for c in rows]
     anchor = v["ts"] - (v["duration"] or 0)
     clips.sort(key=lambda c: (not c["match"], abs(c["ts"] - anchor)))
     nearby = [x for x in load_visits(v["ts"] - NEARBY_S, v["ts"] + NEARBY_S, v["robot"], types=None)
@@ -477,7 +560,7 @@ def api_event(event_id):
 @app.route("/api/events/<event_id>/override", methods=["POST", "DELETE"])
 def api_override(event_id):
     conn = db()
-    act = conn.execute("SELECT type, pet_ids, original_pet_ids FROM activities WHERE id = ?", (event_id,)).fetchone()
+    act = conn.execute("SELECT type, ts, pet_ids, original_pet_ids FROM activities WHERE id = ?", (event_id,)).fetchone()
     if not act:
         abort(404)
     whisker_pet = lr_db.first_pet(act["pet_ids"])
@@ -510,6 +593,7 @@ def api_override(event_id):
                 "note=excluded.note, updated_at=excluded.updated_at",
                 (event_id, pet_id, note, time.time()))
     if (push_to is not ... and act["type"] == "PET_VISIT" and lr_db.writeback_enabled(conn)
+            and lr_db.whisker_editable(act["ts"])
             and (push_to != whisker_pet or lr_db.latest_push(conn, event_id))):
         lr_db.enqueue_push(conn, event_id, push_to)
     conn.commit()
@@ -523,6 +607,8 @@ def api_retry_push(event_id):
     v = _one_event(event_id)
     if v["type"] != "PET_VISIT":
         abort(400)
+    if not lr_db.whisker_editable(v["ts"]):
+        return jsonify(reason="too_old", event=v), 409
     lr_db.enqueue_push(conn, event_id, v["pet"])
     conn.commit()
     return jsonify(event=_one_event(event_id))
@@ -797,6 +883,7 @@ def list_videos(robot, date):
     known = {r["video_file"]: r for r in db().execute(
         "SELECT * FROM clips WHERE robot_folder = ? AND video_file IS NOT NULL", (robot,))
         if f"_{date}_" in r["video_file"]}
+    downloads = lr_db.clip_download_status(db(), [r["id"] for r in known.values()])
     videos = []
     for f in sorted(d.glob(f"*_{date}_*.mp4"), reverse=True):
         if f.name.endswith(".part.mp4"):
@@ -804,7 +891,10 @@ def list_videos(robot, date):
         m = _TIME_RE.search(f.name)
         row = known.get(f.name)
         videos.append({"filename": f.name, "time": m.group(1).replace("-", ":") if m else "",
-                       "id": row["id"] if row else None, **(keep_fields(row) if row else {})})
+                       "v": int(f.stat().st_mtime),
+                       "id": row["id"] if row else None,
+                       "download": downloads.get(str(row["id"])) if row else None,
+                       **(keep_fields(row) if row else {})})
     return jsonify(videos)
 
 

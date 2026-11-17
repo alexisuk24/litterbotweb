@@ -139,7 +139,7 @@ async def download_hls(
         local_m3u8 = tmpdir / "index.m3u8"
         local_m3u8.write_text("\n".join(out_lines) + "\n")
 
-        partial = dest.with_suffix(".part.mp4")
+        partial = dest.with_name(f"{dest.stem}.{os.urandom(4).hex()}.part.mp4")
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-allowed_extensions", "ALL",
@@ -496,7 +496,7 @@ async def main() -> int:
     db.commit()
 
     account = Account()
-    worker = None if args.dump else asyncio.create_task(outbox_worker(args.db, account))
+    worker = None if args.dump else asyncio.create_task(outbox_worker(args, account))
     last_update_check: datetime | None = None
     trigger = "startup"
     try:
@@ -559,7 +559,7 @@ async def send_pushes(db, account: Account) -> None:
     if not robots:  # not logged in yet; try again after the next connect
         return
     rows = db.execute(
-        "SELECT p.id, p.activity_id, p.to_pet, a.robot_serial, a.pet_ids, a.raw FROM whisker_pushes p "
+        "SELECT p.id, p.activity_id, p.to_pet, a.ts, a.robot_serial, a.pet_ids, a.raw FROM whisker_pushes p "
         "JOIN activities a ON a.id = p.activity_id WHERE p.status = 'pending' ORDER BY p.id"
     ).fetchall()
     for p in rows:
@@ -570,7 +570,9 @@ async def send_pushes(db, account: Account) -> None:
             continue
         current, target = lr_db.first_pet(p["pet_ids"]), p["to_pet"]
         error = None
-        if current != target:
+        if current != target and not lr_db.whisker_editable(p["ts"]):
+            error = "Whisker only accepts changes to visits from the last 7 days"
+        elif current != target:
             event_id = json.loads(p["raw"] or "{}").get("eventId")
             robot = robots.get(p["robot_serial"])
             if not event_id:
@@ -592,11 +594,49 @@ async def send_pushes(db, account: Account) -> None:
             LOG.info("Whisker: visit %s now assigned to %s", p["activity_id"], target or "no cat")
 
 
-async def run_commands(db, account: Account) -> None:
-    """Run robot commands (clean, reset, ...) queued by the web UI."""
-    # a clean cycle firing long after the click would be a surprise, so stale requests expire
+async def redownload_clip(db, robot: LitterRobot5, args: argparse.Namespace, clip_id: str) -> str | None:
+    """Fetch a fresh copy of one clip from Whisker. download_hls writes to a temp
+    file and only then replaces the old one, so a failure leaves the old copy intact.
+    Returns an error message, or None on success."""
+    row = db.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
+    if not row:
+        return "Clip not found"
+    raw = json.loads(row["raw"] or "{}")
+    raw.setdefault("createdAt", row["ts"])  # upsert_clip keys the clip's time off this
+    folder = Path(args.out) / row["robot_folder"]
+    if row["video_file"]:
+        stem = Path(row["video_file"]).stem
+    else:
+        when = datetime.fromtimestamp(row["ts"], ZoneInfo(robot.timezone or args.tz))
+        stem = f"{slug(robot.name)}_{when:%Y-%m-%d}_{when:%H-%M-%S}"
+    playback = await robot.get_camera_client().get_video_playback(clip_id)
+    if not playback or not playback.hls_url:
+        return "Whisker no longer has this clip (it may have expired from Whisker's history)"
+    folder.mkdir(parents=True, exist_ok=True)
+    mp4, thumb = folder / f"{stem}.mp4", folder / f"{stem}.jpg"
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as http:
+        await download_hls(http, playback.hls_url, playback.cookie_header, mp4)
+        (folder / f"{stem}.json").write_text(json.dumps(raw, indent=2))
+        if raw.get("videoThumbnail") and not args.no_thumbs:
+            try:
+                thumb.write_bytes(await fetch(http, raw["videoThumbnail"], playback.cookie_header))
+            except Exception as err:
+                LOG.debug("thumbnail failed for %s: %s", clip_id, err)
+    lr_db.upsert_clip(db, clip_id=clip_id, robot_serial=robot.serial, robot_folder=row["robot_folder"], raw=raw,
+                      video_file=mp4.name, thumb_file=thumb.name if thumb.exists() else None)
+    db.execute("UPDATE clips SET deleted_at = NULL WHERE id = ?", (clip_id,))
+    db.commit()
+    return None
+
+
+async def run_commands(db, account: Account, args: argparse.Namespace) -> None:
+    """Run robot commands (clean, reset, ...) and clip re-downloads queued by the web UI."""
+    # a clean cycle firing long after the click would be a surprise, so stale requests
+    # expire; downloads can legitimately queue behind each other for longer
+    now = time.time()
     db.execute("UPDATE robot_commands SET status = 'error', error = 'Not sent: the collector was not ready in time', "
-               "updated_at = ? WHERE status = 'pending' AND created_at < ?", (time.time(), time.time() - 120))
+               "updated_at = ? WHERE status = 'pending' AND ((command != 'redownload' AND created_at < ?) "
+               "OR (command = 'redownload' AND created_at < ?))", (now, now - 120, now - 1800))
     db.commit()
     robots = {r.serial: r for r in account.robots if isinstance(r, LitterRobot5)}
     if not robots:
@@ -608,6 +648,11 @@ async def run_commands(db, account: Account) -> None:
         error = None
         if not robot:
             error = "Robot not found on this account"
+        elif c["command"] == "redownload":
+            try:
+                error = await redownload_clip(db, robot, args, c["arg"])
+            except Exception as err:
+                error = (str(err) or type(err).__name__)[:200]
         elif c["command"] not in lr_db.ROBOT_COMMANDS:
             error = f"Unknown command {c['command']}"
         else:
@@ -634,14 +679,14 @@ async def run_commands(db, account: Account) -> None:
                 LOG.info("%s: %s sent", c["robot_serial"], c["command"])
 
 
-async def outbox_worker(db_path: str, account: Account) -> None:
-    """Background loop that acts on requests from the web UI (robot commands and
-    Whisker cat corrections) within a couple of seconds, even mid-sync."""
-    db = lr_db.connect(db_path)
+async def outbox_worker(args: argparse.Namespace, account: Account) -> None:
+    """Background loop that acts on requests from the web UI (robot commands, clip
+    re-downloads and Whisker cat corrections) within a couple of seconds, even mid-sync."""
+    db = lr_db.connect(args.db)
     while True:
         try:
             if lr_db.has_pending_commands(db):
-                await run_commands(db, account)
+                await run_commands(db, account, args)
             if lr_db.has_pending_pushes(db):
                 await send_pushes(db, account)
         except asyncio.CancelledError:

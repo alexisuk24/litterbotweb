@@ -37,15 +37,22 @@
     const r = st.retention || {};
     let note = document.getElementById('retentionNote');
     const show = r.days && r.starts_at && r.starts_at > now();
-    if (!show) { if (note) note.remove(); return; }
+    let dismissed = null;
+    try { dismissed = localStorage.getItem('lr-retention-dismissed'); } catch {}
+    if (!show || dismissed === String(r.starts_at)) { if (note) note.remove(); return; }
     if (!note) {
       note = document.createElement('div');
       note.id = 'retentionNote';
       note.className = 'retention-note';
+      note.innerHTML = '<span></span><button aria-label="Dismiss" title="Dismiss">✕</button>';
+      note.querySelector('button').addEventListener('click', () => {
+        try { localStorage.setItem('lr-retention-dismissed', String(r.starts_at)); } catch {}
+        note.remove();
+      });
       document.querySelector('.topnav').after(note);
     }
     const when = new Date(r.starts_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-    note.textContent = `From ${when}, clips older than ${r.days} days will be deleted automatically. Mark any you want to keep with 📌 Keep forever.`;
+    note.querySelector('span').textContent = `From ${when}, clips older than ${r.days} days are deleted. Tap 📌 Keep forever on any you want to keep.`;
   }
 
   function schedule() {

@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Robots · Litter Robot</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "_head.html" %}
 <style>
 .wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 1rem; }
 .tabs { display: flex; gap: .5rem; flex-wrap: wrap; }
@@ -50,6 +51,14 @@
 .list .t { color: var(--muted); min-width: 7.5rem; }
 .fw { padding: .25rem 1.1rem 1rem; font-size: .84rem; color: var(--text2); line-height: 1.6; }
 .fw code { font-family: ui-monospace, monospace; font-size: .78rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; word-break: break-all; }
+.fwt { border-collapse: collapse; width: 100%; }
+.fwt td { padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+.fwt td:last-child { text-align: right; font-size: .78rem; padding-right: 0; }
+.fwh { margin-top: .8rem; display: grid; gap: .35rem; }
+.fwh-title { font-size: .7rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.fwh > div:not(.fwh-title):not(.fwh-empty) { display: flex; gap: .75rem; flex-wrap: wrap; }
+.fwh .t { color: var(--muted); min-width: 7.5rem; }
+.fwh-empty { font-size: .78rem; color: var(--muted); margin-top: .4rem; }
 .fw .note { color: var(--muted); font-size: .8rem; margin-top: .5rem; }
 </style>
 </head>
@@ -58,8 +67,8 @@
 <div class="page">
   <div class="wrap" id="root" data-serial="{{ serial }}"><div class="card"><div class="empty">Loading…</div></div></div>
 </div>
-<script src="/static/common.js"></script>
-<script src="/static/robot.js"></script>
-<script src="/static/sync.js"></script>
+<script src="{{ asset('common.js') }}"></script>
+<script src="{{ asset('robot.js') }}"></script>
+<script src="{{ asset('sync.js') }}"></script>
 </body>
 </html>

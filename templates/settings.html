@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Settings · Litter Robot</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "_head.html" %}
 <style>
 .settings { max-width: 720px; margin: 0 auto; display: grid; gap: 1rem; }
 .settings h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
@@ -42,7 +43,8 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
           <div class="label" id="wbLabel">Send cat corrections to Whisker</div>
           <div class="desc">When you change which cat a visit was, mark it Unknown, or revert it on the Events page,
             the change is also made in your Whisker account. That also corrects the cat's weight history in
-            the Whisker app. Notes always stay in this app only.</div>
+            the Whisker app. Whisker only accepts changes to visits from the last 7 days; older
+            corrections, and notes, stay in this app only.</div>
           <div class="status" id="wbStatus"></div>
         </div>
         <label class="switch"><input type="checkbox" id="wbToggle" role="switch" aria-labelledby="wbLabel" disabled><span class="track"></span></label>
@@ -71,7 +73,7 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
     </div>
   </div>
 </div>
-<script src="/static/common.js"></script>
+<script src="{{ asset('common.js') }}"></script>
 <script>
 function every(secs) {
   if (secs % 86400 === 0) return `Every ${secs / 86400 === 1 ? 'day' : `${secs / 86400} days`}`;
@@ -129,6 +131,6 @@ api('/api/settings').then(paint).catch(() => {
   el('wbStatus').className = 'status warn';
 });
 </script>
-<script src="/static/sync.js"></script>
+<script src="{{ asset('sync.js') }}"></script>
 </body>
 </html>
