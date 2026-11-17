@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Clips · Litter Robot</title>
 <link rel="stylesheet" href="{{ asset('app.css') }}">
 {% include "_head.html" %}
@@ -24,7 +24,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .layout { display: grid; grid-template-columns: 300px 1fr; gap: 1.25rem; padding: 1rem 1.5rem 2rem; max-width: 1100px; margin: 0 auto; align-items: start; }
 .sidebar { order: 1; }
 .player { order: 2; }
-@media (max-width: 720px) { .layout { grid-template-columns: 1fr; } .sidebar { order: 2; } .player { order: 1; position: static; } }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); }
 
@@ -55,7 +54,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .play-icon { color: var(--muted); font-size: .7rem; }
 .clip-item.active .play-icon { color: var(--accent); }
 
-.player { position: sticky; top: 1rem; }
+.player { position: sticky; top: 72px; }
 video { width: 100%; aspect-ratio: 16/9; background: #000; display: block; border-radius: var(--r) var(--r) 0 0; }
 .player-meta { padding: .75rem 1rem; display: flex; align-items: center; gap: .5rem; }
 .player-info { flex: 1; text-align: center; }
@@ -69,6 +68,15 @@ video { width: 100%; aspect-ratio: 16/9; background: #000; display: block; borde
 
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2.5rem 1rem; gap: .5rem; color: var(--muted); font-size: .875rem; text-align: center; }
 .empty-icon { font-size: 2rem; }
+/* Narrow screens: the player stays pinned under the top bar while the calendar and
+   clip list scroll beneath it, so tapping a clip plays it in view. */
+@media (max-width: 720px) {
+  #robotTabs { padding: .75rem .75rem 0; }
+  .layout { grid-template-columns: 1fr; padding: .75rem; gap: .75rem; }
+  .sidebar { order: 2; }
+  .player { order: 1; top: var(--topbar-h, 58px); z-index: 5; box-shadow: 0 8px 16px -8px rgba(0,0,0,.6); }
+  .player > .empty { padding: 1.25rem 1rem; }
+}
 </style>
 </head>
 <body>
@@ -127,6 +135,7 @@ async function init() {
     tabs.innerHTML = '<span style="color:var(--muted);font-size:.875rem;padding:.5rem 0">No robots found — clips appear here once downloaded</span>';
     return;
   }
+  tabs.hidden = robots.length < 2;
   tabs.innerHTML = robots.map(r =>
     `<button class="tab" onclick="selectRobot('${esc(r)}')">${esc(r)}</button>`
   ).join('');

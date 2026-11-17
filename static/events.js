@@ -22,7 +22,7 @@ function readUrl() {
 function writeUrl() {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(s.f)) if (v && !(k === 'type' && v === 'PET_VISIT')) p.set(k, v);
-  if (s.active) p.set('id', s.active);
+  if (s.active && (!narrow.matches || sheetOpen())) p.set('id', s.active);
   history.replaceState(null, '', `${location.pathname}${p.toString() ? '?' + p : ''}`);
 }
 
@@ -169,8 +169,44 @@ function updateRow(v) {
 
 // ---------------------------------------------------------------- detail
 
+// ---------------------------------------------------------------- phone sheet
+
+// On narrow screens the detail opens as a full-screen sheet over the list. Opening
+// it adds a history entry so the phone's Back gesture closes it instead of leaving.
+const narrow = matchMedia('(max-width: 860px)');
+const sheetOpen = () => document.body.classList.contains('sheet-open');
+let sheetEntry = false;
+
+function openSheet() {
+  if (!narrow.matches || sheetOpen()) return;
+  document.body.classList.add('sheet-open');
+  history.pushState(null, '', location.href);
+  sheetEntry = true;
+}
+function closeSheet() {
+  if (!sheetOpen()) return;
+  document.body.classList.remove('sheet-open');
+  el('detailPane').querySelector('video')?.pause();
+  writeUrl();
+  // Prev/next may have moved on from the row that was tapped; bring that one into view.
+  el('list').querySelector(`.ev[data-id="${CSS.escape(s.active)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+function paintSheetHead() {
+  const v = s.detail.event;
+  el('sheetTitle').textContent = `${fmtDay(v.ts)} · ${fmtTime(v.ts)}`;
+  const i = s.events.findIndex(x => x.id === s.active);
+  el('sheetPrev').disabled = i <= 0;
+  el('sheetNext').disabled = i === -1 || i >= s.events.length - 1;
+}
+el('sheetClose').addEventListener('click', () => sheetEntry ? history.back() : closeSheet());
+el('sheetPrev').addEventListener('click', () => step(-1));
+el('sheetNext').addEventListener('click', () => step(1));
+window.addEventListener('popstate', () => { sheetEntry = false; closeSheet(); });
+narrow.addEventListener('change', () => { if (!narrow.matches) document.body.classList.remove('sheet-open'); });
+
 async function select(id, { scroll = true } = {}) {
   s.active = id;
+  openSheet();
   writeUrl();
   el('list').querySelectorAll('.ev').forEach(n => n.classList.toggle('active', n.dataset.id === id));
   if (scroll) el('list').querySelector(`.ev[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
@@ -184,10 +220,9 @@ async function select(id, { scroll = true } = {}) {
   s.clipIdx = Math.max(0, s.detail.clips.findIndex(c => c.video));
   const busyClip = s.detail.clips.find(dlBusy);
   if (busyClip) watchDownload(busyClip.id);
-  const wasIdle = el('detail').classList.contains('idle');
-  el('detail').classList.remove('idle');
   renderDetail();
-  if (matchMedia('(max-width: 860px)').matches && (scroll || wasIdle)) el('detail').scrollIntoView({ behavior: 'smooth' });
+  paintSheetHead();
+  el('detailPane').scrollTop = 0;
 }
 
 const dlBusy = c => c && c.download && (c.download.status === 'pending' || c.download.status === 'sending');
@@ -374,7 +409,7 @@ function renderDetail() {
   const { event: v, nearby } = s.detail;
   const isVisit = v.type === 'PET_VISIT';
   const facts = [
-    ['When', `${fmtDay(v.ts)} ${fmtTime(v.ts)}`],
+    !narrow.matches && ['When', `${fmtDay(v.ts)} ${fmtTime(v.ts)}`],  // the sheet title shows it on phones
     isVisit && ['Weight', fmtW(v.weight)],
     isVisit && ['Duration', fmtDur(v.duration)],
     isVisit && ['Waste', v.waste_type || '—'],
@@ -438,6 +473,7 @@ function step(d) {
 }
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && sheetOpen()) { e.preventDefault(); el('sheetClose').click(); return; }
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); step(1); }
   else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); step(-1); }

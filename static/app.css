@@ -30,7 +30,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sync-btn.spinning i { animation: spin 1s linear infinite; }
 .sync-btn:disabled { opacity: .55; cursor: default; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 600px) { .sync #syncStatus { display: none; } }
+@media (max-width: 380px) { .sync #syncStatus { display: none; } }
 .retention-note { background: var(--warn-bg); color: var(--warn); font-size: .82rem; padding: .5rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: .75rem; }
 .retention-note span { flex: 1; }
 .retention-note button { background: none; border: 0; color: inherit; font-size: 1.1rem; line-height: 1; cursor: pointer; padding: .2rem .35rem; opacity: .8; }
@@ -39,19 +39,31 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .expiry { font-size: .75rem; color: var(--muted); }
 
 .page { max-width: 1280px; margin: 0 auto; padding: 1rem 1.5rem 3rem; }
+.tabbar svg { display: none; }
+/* Phones: slim top bar (brand + sync), page links move to a bottom tab bar. */
 @media (max-width: 600px) {
-  .topnav { padding: .45rem .5rem .45rem .75rem; gap: .35rem; flex-wrap: nowrap; }
-  .topnav .brand-name, .topnav .spacer { display: none; }
-  .topnav nav { flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; gap: 0; }
-  .topnav nav::-webkit-scrollbar { display: none; }
-  .topnav nav a { padding: .4rem .45rem; font-size: .84rem; white-space: nowrap; }
-  .topnav .brand-icon { width: 24px; height: 24px; border-radius: 6px; }
-  .sync-btn { min-width: 0; width: 38px; height: 34px; padding: 0; }
+  :root { --topbar-h: 50px; --tabbar-h: 56px; }
+  body { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); }
+  .topnav { height: calc(var(--topbar-h) + env(safe-area-inset-top)); padding: env(safe-area-inset-top) .75rem 0; gap: .5rem; flex-wrap: nowrap; }
+  .topnav .brand-icon { width: 26px; height: 26px; border-radius: 6px; }
+  .topnav .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; gap: 0;
+            background: var(--surface); border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
+  .topnav .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2rem;
+              height: var(--tabbar-h); padding: 0; font-size: .68rem; border-radius: 0;
+              -webkit-tap-highlight-color: transparent; }
+  .topnav .tabbar a:hover { background: none; }
+  .topnav .tabbar a.active { background: none; box-shadow: none; color: var(--accent); }
+  .topnav .tabbar svg { display: block; width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .sync { gap: .5rem; }
+  .sync-btn { min-width: 0; width: 36px; height: 34px; padding: 0; }
   .sync-btn span { display: none; }
   .sync-btn i { font-size: 1.05rem; }
   .retention-note { padding: .45rem .75rem; font-size: .78rem; }
   .page { padding-inline: .75rem; padding-top: .75rem; }
 }
+@media (max-width: 340px) { .topnav .brand-name { display: none; } }
+/* Keyboard shortcut hints mean nothing on a touch screen. */
+@media (hover: none) { kbd, .kbd-hint { display: none !important; } }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); }
 .muted { color: var(--muted); }
 .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: 1rem; }

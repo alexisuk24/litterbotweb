@@ -2,20 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Events · Litter Robot</title>
 <link rel="stylesheet" href="{{ asset('app.css') }}">
 {% include "_head.html" %}
 <style>
 .layout { display: grid; grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
 .layout > * { min-width: 0; }
-@media (max-width: 860px) {
-  .page { padding-inline: .75rem; }
-  .layout { grid-template-columns: minmax(0, 1fr); }
-  .detail { position: static !important; order: -1; scroll-margin-top: 64px; }
-  .detail.idle { display: none; }
-  .ev { padding-inline: .75rem; }
-}
 
 .more-filters { display: contents; }
 .seg .short { display: none; }
@@ -40,6 +33,7 @@
 .list { max-height: calc(100vh - 170px); overflow-y: auto; }
 @media (max-width: 860px) { .list { max-height: none; } }
 .day-head { position: sticky; top: 0; background: var(--surface); padding: .55rem 1rem; font-size: .7rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; z-index: 1; }
+.list > .day-head:first-child { border-radius: var(--r) var(--r) 0 0; }
 .ev { display: grid; grid-template-columns: 72px 1fr auto; gap: .75rem; align-items: center; padding: .55rem 1rem; cursor: pointer; border-left: 3px solid transparent; }
 .ev:hover { background: var(--surface2); }
 .ev.active { background: var(--surface2); border-left-color: var(--accent); }
@@ -95,6 +89,31 @@
 .push.err { color: var(--warn); }
 .saved { font-size: .75rem; color: var(--teal); opacity: 0; transition: opacity .3s; }
 .saved.show { opacity: 1; }
+.sheet-head { display: none; }
+/* Narrow screens: the list fills the page and an event opens as a full-screen
+   sheet over it, so closing the sheet leaves the list exactly where it was. */
+@media (max-width: 860px) {
+  .page { padding-inline: .75rem; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .ev { padding-inline: .75rem; scroll-margin: calc(var(--topbar-h, 58px) + 36px) 0 calc(var(--tabbar-h, 0px) + 12px); }
+  .detail { display: none; position: fixed; inset: 0; z-index: 30; border: 0; border-radius: 0;
+            overflow-y: auto; overscroll-behavior: contain; padding-bottom: env(safe-area-inset-bottom); }
+  body.sheet-open { overflow: hidden; }
+  body.sheet-open .detail { display: block; animation: sheet-in .22s ease-out; }
+  .sheet-head { display: flex; align-items: center; gap: .15rem; position: sticky; top: 0; z-index: 2;
+                height: calc(50px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) .35rem 0;
+                background: var(--surface); border-bottom: 1px solid var(--border); }
+  .sheet-title { flex: 1; min-width: 0; text-align: center; font-weight: 600; font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .sheet-btn { background: none; border: 0; color: var(--accent); min-width: 44px; min-height: 44px; padding: 0 .5rem; font-size: .95rem; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .sheet-btn:disabled { color: var(--muted); opacity: .4; }
+  #sheetClose { font-size: 1rem; font-weight: 500; }
+  .detail video, .novideo { border-radius: 0; }
+  .list { overflow: visible; }
+  .day-head { top: var(--topbar-h, 58px); }
+}
+@keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { body.sheet-open .detail { animation: none; } }
+@media (max-width: 600px) { .pick { display: grid; grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
@@ -119,9 +138,17 @@
   </div>
   <div class="layout">
     <div class="card list" id="list"><div class="empty">Loading…</div></div>
-    <div class="card detail idle" id="detail">
-      <div class="empty"><div class="empty-icon">🐾</div><div>Select an event to see its clips</div>
-        <div class="hint"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> assign cat · <kbd>0</kbd> unknown · <kbd>u</kbd> undo edit</div>
+    <div class="card detail" id="detailPane" role="dialog" aria-labelledby="sheetTitle">
+      <div class="sheet-head">
+        <button class="sheet-btn" id="sheetClose" aria-label="Back to events">‹ Events</button>
+        <span class="sheet-title" id="sheetTitle"></span>
+        <button class="sheet-btn" id="sheetPrev" aria-label="Newer event">▲</button>
+        <button class="sheet-btn" id="sheetNext" aria-label="Older event">▼</button>
+      </div>
+      <div id="detail">
+        <div class="empty"><div class="empty-icon">🐾</div><div>Select an event to see its clips</div>
+          <div class="hint kbd-hint"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> assign cat · <kbd>0</kbd> unknown · <kbd>u</kbd> undo edit</div>
+        </div>
       </div>
     </div>
   </div>
