@@ -39,6 +39,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 from pylitterbot import Account
+from pylitterbot.camera import VideoClip
 from pylitterbot.robot.litterrobot5 import LitterRobot5
 
 import lr_db
@@ -158,21 +159,57 @@ async def download_hls(
 # ------------------------------------------------------------------------ clips
 
 
-def date_window(days: int) -> list[str]:
-    """Dates to query. The API's date bucketing (UTC vs local) is unconfirmed,
-    so cover one extra day either side and dedupe by clip id."""
-    today = datetime.now(timezone.utc).date()
+MAX_CLIP_PAGES = 50  # Whisker returns 10 clips per page
+
+
+def date_window(days: int, tz: ZoneInfo) -> list[str]:
+    """Dates to query, as days in tz (how Whisker reads them when given a
+    timezone). One extra day either side for safety; clips dedupe by id."""
+    today = datetime.now(tz).date()
     return [(today - timedelta(d)).isoformat() for d in range(-1, days + 1)]
 
 
-async def list_clips(robot: LitterRobot5, days: int) -> list:
-    seen: dict[str, object] = {}
-    for clip in await robot.get_camera_videos():  # newest, no date filter
-        seen.setdefault(clip.id, clip)
-    for day in date_window(days):
-        for clip in await robot.get_camera_videos(date=day):
-            seen.setdefault(clip.id, clip)
+async def list_clips(robot: LitterRobot5, days: int, tz_name: str, raw_pages: dict | None = None) -> list:
+    """Every clip Whisker lists for the date window.
+
+    Whisker returns a different set of clips for each timezone it is given:
+    without one it behaves as UTC and leaves out recent clips for accounts
+    elsewhere (pylitterbot PR #484), but the local-timezone list misses some
+    clips the UTC one has. So list both, paging like the app, and merge by id.
+    pylitterbot also turns a failed response into [], so fetch directly and
+    warn about those. raw_pages, if given, collects each response as-is."""
+    client = robot.get_camera_client()
+    seen: dict[str, VideoClip] = {}
+    for tz in dict.fromkeys([tz_name, "UTC"]):
+        tz_param = {} if tz == "UTC" else {"timezone": tz}  # UTC: no timezone, as before
+        for day in [None, *date_window(days, ZoneInfo(tz))]:  # None: newest, no date filter
+            await _list_clip_pages(robot, client, day, tz_param, seen, raw_pages)
     return sorted(seen.values(), key=lambda c: c.created_at or datetime.min.replace(tzinfo=timezone.utc))
+
+
+async def _list_clip_pages(robot: LitterRobot5, client, day: str | None, tz_param: dict,
+                           seen: dict[str, VideoClip], raw_pages: dict | None) -> None:
+    url = f"{client._inventory_base}/videos" + (f"/{day}" if day else "")
+    label = f"{day or 'latest'} {tz_param.get('timezone', 'UTC')}"
+    listed: set[str] = set()  # this listing's ids, to spot the page that repeats
+    for page in range(1, MAX_CLIP_PAGES + 1):
+        data = await client._get(url, params={"page": str(page), **tz_param})
+        if raw_pages is not None:
+            raw_pages[f"{label} p{page}"] = data
+        if not isinstance(data, list):
+            LOG.warning("%s: Whisker's clip list for %s (page %d) %s", robot.name, label, page,
+                        "request failed" if data is None else f"returned {type(data).__name__}, not a list")
+            return
+        added = 0
+        for item in data:
+            if isinstance(item, dict):
+                clip = VideoClip.from_response(item)
+                seen.setdefault(clip.id, clip)
+                if clip.id not in listed:
+                    listed.add(clip.id)
+                    added += 1
+        if not added:  # empty page, or one that repeats clips already seen
+            return
 
 
 CLIP_STALE_AFTER_S = 3 * 3600
@@ -201,7 +238,8 @@ async def process_robot(
 ) -> tuple[int, int]:
     tz = ZoneInfo(robot.timezone or args.tz)
     client = robot.get_camera_client()
-    clips = await list_clips(robot, args.days)
+    raw_pages: dict = {}
+    clips = await list_clips(robot, args.days, robot.timezone or args.tz, raw_pages)
     LOG.info("%s: %d clip(s) listed", robot.name, len(clips))
     if not args.dump:
         check_clip_list_freshness(args.db_conn, robot, clips)
@@ -211,6 +249,7 @@ async def process_robot(
         d.mkdir(parents=True, exist_ok=True)
         (d / "robot.json").write_text(json.dumps(robot.to_dict(), indent=2, default=str))
         (d / "clips.json").write_text(json.dumps([c.raw for c in clips], indent=2))
+        (d / "clips_by_date.json").write_text(json.dumps(raw_pages, indent=2))  # each listing response as-is
         (d / "events.json").write_text(json.dumps(await client.get_events(limit=200), indent=2))
         (d / "camera_info.json").write_text(json.dumps(await client.get_camera_info(), indent=2))
         (d / "activities.json").write_text(json.dumps(await robot.get_activities(limit=200), indent=2))
@@ -510,6 +549,8 @@ async def main() -> int:
         if not os.environ.get(var):
             LOG.error("%s is not set", var)
             return 2
+    if args.dump:
+        args.interval = 0  # a dump is a one-off, even in the container where LR_DOWNLOAD_INTERVAL is set
     if not shutil.which("ffmpeg") and not args.dump:
         LOG.error("ffmpeg is required")
         return 2
