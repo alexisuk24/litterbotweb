@@ -2,8 +2,8 @@ const SERIAL = el('root').dataset.serial;
 const ACTIONS = [
   { cmd: 'clean', label: 'Start a clean cycle', button: 'Clean now', confirm: 'Yes, start cycle',
     desc: 'Rotates the globe now and sifts waste into the drawer. Make sure no cat is inside.' },
-  { cmd: 'reset_drawer', label: 'Reset waste drawer gauge', button: 'Drawer emptied', confirm: 'Yes, reset gauge',
-    desc: 'Do this after emptying the drawer so the fill level and cycle count start from zero.' },
+  { cmd: 'reset_drawer', label: 'Tare', button: 'Tare', confirm: 'Yes, tare',
+    desc: 'Resets the scale. Do this after emptying the waste drawer or filling the hopper with litter.' },
   { cmd: 'remote_reset', label: 'Remote reset', button: 'Reset robot', confirm: 'Yes, reset robot',
     desc: 'Clears errors, e.g. after a jam or a pinch detection. The robot may run a cycle afterwards.' },
 ];

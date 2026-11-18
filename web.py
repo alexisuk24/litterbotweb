@@ -903,15 +903,9 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
             msg += (f" Most common mix-up: logged as {names.get(a, 'no cat')} but was actually "
                     f"{names.get(b, 'an unknown cat')} ({n}×).")
         out.append(("info", msg))
-    unassigned = sum(1 for v in visits if not v["pet"])
-    if unassigned:
-        out.append(("warn", f"{unassigned} visit{'s have' if unassigned != 1 else ' has'} no cat assigned. "
-                            "Review them on the Events page."))
     if sum(cycles_daily):
         out.append(("info", f"The robot ran {sum(cycles_daily) / n_days:.1f} clean cycles per day "
                             f"({sum(cycles_daily) / max(1, len(visits)):.2f} per visit)."))
-    if interrupted:
-        out.append(("warn", f"{interrupted} clean cycle{'s were' if interrupted != 1 else ' was'} interrupted."))
     if offline:
         out.append(("warn", f"The robot went offline {len(offline)} time{'s' if len(offline) != 1 else ''}, "
                             f"most recently {datetime.fromtimestamp(max(offline), tz).strftime('%b %d %H:%M')}."))

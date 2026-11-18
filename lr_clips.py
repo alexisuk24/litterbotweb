@@ -340,7 +340,7 @@ def robot_info(robot: LitterRobot5) -> dict:
     }
     motor = _safe(lambda: robot.globe_motor_fault_status)
     motor_name = getattr(motor, "name", None)
-    if motor_name and motor_name not in ("NONE", "OK", "UNKNOWN"):
+    if motor_name and motor_name not in ("NONE", "OK", "UNKNOWN", "FAULT_CLEAR"):  # FAULT_CLEAR: no fault
         faults[f"Globe motor: {motor_name.replace('_', ' ').lower()}"] = True
     return {
         "status": getattr(status, "text", None) or (str(status) if status else None),
