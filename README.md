@@ -73,6 +73,15 @@ optionally the address you open this app at so notifications link back to it, an
 **Send test** to check. After each sync the collector sends anything new: each cat's
 warnings from the Cats page and robot problems (drawer full, other faults, litter low,
 offline). Each type of alert has its own checkbox, all on by default.
+
+**Robot IQ** forecasts when each robot's waste drawer will be full and its litter hopper
+will need refilling, shown on the robot's page and sent as notifications a chosen number
+of days ahead (Settings). The drawer forecast uses how much the fill level rises per clean
+cycle since it was last emptied and the robot's recent cycles per day, up to the level at
+which that robot reports the drawer full. The LR5 reports no hopper level, only Ready /
+Litter low / Empty, so the hopper forecast starts once a refill has been seen running down
+to Litter low: the dispenses that took set the capacity. Until then you're notified when
+the robot reports the hopper low or empty.
 A problem is sent once and again only if it clears and comes back; several new ones arrive
 as one notification. A burst of visits in 24 hours is sent at high priority.
 

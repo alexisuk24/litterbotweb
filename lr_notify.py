@@ -35,7 +35,10 @@ CATEGORIES = [
     ("fault", "robots", "Other faults", "bonnet or drawer removed, sensors, globe motor"),
     ("litter", "robots", "Litter low", ""),
     ("offline", "robots", "Robot offline", "not connected to Whisker"),
+    ("drawer_soon", "iq", "Waste drawer full soon", "forecast from how fast it has been filling"),
+    ("hopper_soon", "iq", "Litter hopper empty soon", "forecast from how fast litter is dispensed, or when the robot reports it low"),
 ]
+LEAD_DAYS = (1, 2, 3, 5)  # how far ahead Robot IQ warns
 
 
 class PushoverError(Exception):
@@ -48,6 +51,7 @@ def settings(conn) -> dict:
     return {
         "enabled": get("notify_enabled") == "1",
         "off": set(json.loads(get("notify_off", "[]"))),  # category ids switched off
+        "lead_days": int(get("notify_lead_days", "2")),
         "token": get("pushover_token", ""),
         "user": get("pushover_user", ""),
         "link": get("notify_link", ""),
@@ -70,6 +74,10 @@ def save_settings(conn, body: dict) -> None:
         if link and not re.match(r"^https?://[^\s]{1,200}$", link):
             raise ValueError("The link should start with http:// or https://.")
         lr_db.set_state(conn, "notify_link", link)
+    if "lead_days" in body:
+        if body["lead_days"] not in LEAD_DAYS:
+            raise ValueError("Choose how many days ahead to warn.")
+        lr_db.set_state(conn, "notify_lead_days", str(body["lead_days"]))
     if "categories" in body:  # {category id: on}
         off = settings(conn)["off"]
         for cid, on in body["categories"].items():

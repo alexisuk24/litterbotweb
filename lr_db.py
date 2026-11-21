@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS robot_snapshots (
     scale_weight       REAL,
     cycle_count        INTEGER,
     status             TEXT,
+    hopper_status      TEXT,
     PRIMARY KEY (robot_serial, ts)
 );
 CREATE TABLE IF NOT EXISTS sync_state (
@@ -220,6 +221,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # photos were saved truncated (only the first network chunk); forget them so they're fetched again
         conn.execute("UPDATE pets SET photo_key = NULL, photo_file = NULL")
         conn.execute("PRAGMA user_version = 1")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(robot_snapshots)")}
+    if "hopper_status" not in cols:  # Robot IQ learns the hopper's capacity from these
+        conn.execute("ALTER TABLE robot_snapshots ADD COLUMN hopper_status TEXT")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(robots)")}
     if "info" not in cols:
         conn.execute("ALTER TABLE robots ADD COLUMN info TEXT")
@@ -567,10 +571,13 @@ def upsert_clip(conn, *, clip_id, robot_serial, robot_folder, raw, video_file=No
     )
 
 
-def add_snapshot(conn, *, robot_serial, litter_level, waste_drawer_level, scale_weight, cycle_count, status) -> None:
+def add_snapshot(conn, *, robot_serial, litter_level, waste_drawer_level, scale_weight, cycle_count, status,
+                 hopper_status=None) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO robot_snapshots VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (robot_serial, time.time(), litter_level, waste_drawer_level, scale_weight, cycle_count, status),
+        "INSERT OR IGNORE INTO robot_snapshots (robot_serial, ts, litter_level, waste_drawer_level, scale_weight, "
+        "cycle_count, status, hopper_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (robot_serial, time.time(), litter_level, waste_drawer_level, scale_weight, cycle_count, status,
+         hopper_status),
     )
 
 

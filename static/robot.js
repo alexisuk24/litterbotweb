@@ -74,6 +74,7 @@ function render() {
     ${tile('Wi-Fi', wq, wd)}
     ${tile('Last seen', ago(i.last_seen), when(i.last_seen))}
   </div>`, `
+      ${iqCard(d.iq)}
       <div class="card panel">
         <h2>Firmware</h2>
         <div class="fw">
@@ -96,6 +97,37 @@ function show(top, side = '', camera = false) {
   el('live').hidden = !camera;
   el('cols').hidden = !side && !camera;
   el('cols').classList.toggle('solo', !camera);
+}
+
+// Robot IQ: when the drawer will be full and the hopper need refilling
+function iqCard(iq) {
+  if (!iq || (!iq.drawer && !iq.hopper)) return '';
+  const inDays = d => d < 1 ? 'within a day' : `in about ${Math.round(d)} day${Math.round(d) === 1 ? '' : 's'}`;
+  const on = ts => new Date(ts * 1000).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  const row = (label, value, detail, warn) => `<div class="iq-row"><div class="t">${esc(label)}</div>
+    <div><div class="iq-v${warn ? ' warn' : ''}">${esc(value)}</div>${detail ? `<div class="iq-d">${esc(detail)}</div>` : ''}</div></div>`;
+  const rows = [];
+  const d = iq.drawer;
+  if (d) {
+    const facts = [d.per_cycle ? `+${d.per_cycle.toFixed(2)}% per clean cycle` : '',
+                   d.cycles_per_day ? `${d.cycles_per_day} cycles/day` : '',
+                   d.full_level < 100 ? `reports full at ${Math.round(d.full_level)}%` : ''].filter(Boolean).join(' · ');
+    if (d.state === 'full') rows.push(row('Waste drawer', 'Full now', `at ${Math.round(d.level)}%`, true));
+    else if (d.state === 'ok') rows.push(row('Waste drawer', `Full ${inDays(d.days)}`, `around ${on(d.eta)} · ${facts}`, d.days <= 2));
+    else rows.push(row('Waste drawer', 'Learning', `${Math.round(d.level)}% now. A forecast needs a few syncs and about 10 clean cycles since it was last emptied.`));
+  }
+  const h = iq.hopper;
+  if (h) {
+    const facts = [h.capacity ? `about ${Math.round(h.capacity)} dispenses per fill` : '',
+                   h.since_refill != null ? `${h.since_refill} since refilled` : '',
+                   h.per_day ? `${h.per_day}/day` : ''].filter(Boolean).join(' · ');
+    if (h.state === 'empty') rows.push(row('Litter hopper', 'Empty', 'refill it', true));
+    else if (h.state === 'low') rows.push(row('Litter hopper', 'Litter low', 'refill it soon', true));
+    else if (h.state === 'fault') rows.push(row('Litter hopper', titleCase(h.status), '', true));
+    else if (h.state === 'ok') rows.push(row('Litter hopper', `Refill ${inDays(h.days)}`, `around ${on(h.eta)} · ${facts}`, h.days <= 2));
+    else rows.push(row('Litter hopper', 'Learning', 'The robot only reports Ready, Litter low or Empty. A forecast starts once a refill has been seen running down to Litter low.' + (facts ? ` ${facts}.` : '')));
+  }
+  return `<div class="card panel"><h2>Robot IQ</h2><div class="iq">${rows.join('')}</div></div>`;
 }
 
 const FW_NAMES = { ESP: 'Wi-Fi module', MCU: 'Main controller', CAM: 'Camera', EDGE: 'Edge processor', AI: 'AI model' };

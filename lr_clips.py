@@ -414,6 +414,7 @@ def sync_robot(db, robot: LitterRobot5) -> None:
         scale_weight=_safe(lambda: robot.pet_weight),
         cycle_count=_safe(lambda: robot.cycle_count),
         status=getattr(status, "text", None) or (str(status) if status else None),
+        hopper_status=getattr(_safe(lambda: robot.hopper_status), "name", None),
     )
     lr_db.set_robot_info(db, robot.serial, robot_info(robot))
 

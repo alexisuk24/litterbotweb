@@ -67,7 +67,7 @@ ENV PATH=/opt/venv/bin:$PATH \
 WORKDIR /app
 ADD --checksum=sha256:b38076762f7363bc9e912b68b8e034826798db5df26bb61f000ec2e7a3137bc7 \
     https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js /app/static/vendor/chart.umd.min.js
-COPY lr_clips.py lr_db.py lr_live.py lr_notify.py lr_report.py web.py entrypoint.sh /app/
+COPY lr_clips.py lr_db.py lr_iq.py lr_live.py lr_notify.py lr_report.py web.py entrypoint.sh /app/
 COPY templates /app/templates
 COPY static /app/static
 RUN chmod 755 /app/entrypoint.sh && chmod -R a+rX /app

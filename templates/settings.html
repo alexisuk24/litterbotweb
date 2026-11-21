@@ -49,6 +49,8 @@
 .checks label span { color: var(--muted); font-size: .8rem; }
 .checks .group { font-size: .72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: .4rem; }
 .checks input { margin-top: .2rem; flex-shrink: 0; }
+.lead { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; font-size: .85rem; color: var(--text2); }
+.lead select { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .3rem .5rem; }
 .status.ok { color: var(--teal); }
 code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; }
 </style>
@@ -116,6 +118,10 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
           <div class="label">What to send</div>
           <div class="checks" id="ntCats"></div>
           <div class="checks" id="ntRobots"></div>
+          <div class="checks" id="ntIq"></div>
+          <label class="lead">Warn
+            <select id="ntLead"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option><option value="5">5 days</option></select>
+            before the drawer is full or the hopper runs low</label>
         </div>
       </div>
     </div>
@@ -239,7 +245,8 @@ function paintNotify(n) {
   el('ntToken').placeholder = n.token_hint ? `Saved, ends in ${n.token_hint}` : '30 letters and numbers';
   el('ntLink').placeholder = location.origin;
   if (document.activeElement !== el('ntLink')) el('ntLink').value = n.link || '';
-  for (const [id, group, title] of [['ntCats', 'cats', 'Cats'], ['ntRobots', 'robots', 'Robots']]) {
+  el('ntLead').value = String(n.lead_days);
+  for (const [id, group, title] of [['ntCats', 'cats', 'Cats'], ['ntRobots', 'robots', 'Robots'], ['ntIq', 'iq', 'Robot IQ']]) {
     el(id).innerHTML = `<div class="group">${title}</div>` + n.categories.filter(c => c.group === group).map(c =>
       `<label><input type="checkbox" data-cat="${esc(c.id)}"${c.on ? ' checked' : ''}><div>${esc(c.label)}` +
       `${c.detail ? ` <span>${esc(c.detail)}</span>` : ''}</div></label>`).join('');
@@ -301,7 +308,15 @@ el('ntToggle').addEventListener('change', async e => {
   }
 });
 
-for (const id of ['ntCats', 'ntRobots']) {
+el('ntLead').addEventListener('change', async e => {
+  try { await saveNotify({ lead_days: Number(e.target.value) }); }
+  catch (err) {
+    el('ntStatus').textContent = err.message;
+    el('ntStatus').className = 'status warn';
+  }
+});
+
+for (const id of ['ntCats', 'ntRobots', 'ntIq']) {
   el(id).addEventListener('change', async e => {
     const cat = e.target.dataset.cat;
     if (!cat) return;

@@ -21,6 +21,7 @@ from flask import (Flask, Response, abort, g, jsonify, redirect, render_template
 from pylitterbot.camera import local_timezone_name
 
 import lr_db
+import lr_iq
 import lr_live
 
 app = Flask(__name__)
@@ -181,7 +182,7 @@ def api_robot(serial):
         info=json.loads(r["info"]) if r["info"] else None, info_at=r["info_at"],
         clips_stale=json.loads(lr_db.get_state(conn, f"clips_stale:{serial}") or "null"),
         last_24h={"visits": counts.get("PET_VISIT", 0), "cycles": counts.get("CYCLE_COMPLETED", 0)},
-        last_visit=last_visit, recent=recent, latest=latest,
+        last_visit=last_visit, recent=recent, latest=latest, iq=lr_iq.forecasts(conn, serial),
         history=[c for c in commands if c["command"] != "refresh"][:6],
         firmware=[{"component": f["component"], "version": f["version"], "previous": f["previous"],
                    "at": f["seen_at"]} for f in conn.execute(
@@ -765,7 +766,7 @@ def _notify_settings(conn) -> dict:
     import lr_notify
     cfg = lr_notify.settings(conn)
     # the token and key never go back to the browser; the page shows the last few characters
-    return {"enabled": cfg["enabled"], "link": cfg["link"],
+    return {"enabled": cfg["enabled"], "link": cfg["link"], "lead_days": cfg["lead_days"],
             "categories": [{"id": cid, "group": grp, "label": label, "detail": detail, "on": cid not in cfg["off"]}
                            for cid, grp, label, detail in lr_notify.CATEGORIES],
             "user_hint": cfg["user"][-4:] if cfg["user"] else None,
@@ -1186,6 +1187,32 @@ def current_alerts() -> list[dict]:
                              f"Litter level is {info['litter_state'].lower()}; top up the hopper or globe."))
         out += [{"key": f"robot:{r['serial']}:{k}", "group": "robots", "category": cat, "subject": r["name"],
                  "text": t, "priority": 0} for k, cat, t in problems]
+        out += [{"key": f"robot:{r['serial']}:{k}", "group": "iq", "category": cat, "subject": r["name"],
+                 "text": t, "priority": 0} for k, cat, t in _iq_alerts(r["serial"])]
+    return out
+
+
+def _iq_alerts(serial) -> list[tuple[str, str, str]]:
+    """Robot IQ forecasts that are due within the lead time set on the Settings page."""
+    import lr_notify
+    lead = lr_notify.settings(db())["lead_days"]
+    tz = local_tz()
+    on = lambda eta: datetime.fromtimestamp(eta, tz).strftime("%a %-d %b")
+    days = lambda d: "less than a day" if d < 1 else f"about {d:.0f} day{'s' if round(d) != 1 else ''}"
+    f = lr_iq.forecasts(db(), serial)
+    out = []
+    d = f["drawer"]
+    if d and d.get("state") == "ok" and d["days"] <= lead:
+        out.append(("drawer_soon", "drawer_soon", f"Waste drawer will be full in {days(d['days'])} "
+                                                  f"(around {on(d['eta'])}) at the current rate."))
+    h = f["hopper"]
+    if h and h.get("state") == "empty":
+        out.append(("hopper_empty", "hopper_soon", "Litter hopper is empty; refill it."))
+    elif h and h.get("state") == "low":
+        out.append(("hopper_low", "hopper_soon", "Litter hopper is low; refill it soon."))
+    elif h and h.get("state") == "ok" and h["days"] <= lead:
+        out.append(("hopper_soon", "hopper_soon", f"Litter hopper will need refilling in {days(h['days'])} "
+                                                  f"(around {on(h['eta'])}) at the current rate."))
     return out
 
 
