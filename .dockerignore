@@ -1,0 +1,10 @@
+.git
+.gitignore
+**/__pycache__
+static/vendor/
+data/
+clips/
+*.db
+*.db-*
+.env
+s3-check/

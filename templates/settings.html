@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Settings · Litter Robot</title>
+<link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "_head.html" %}
+<style>
+.settings { max-width: 720px; margin: 0 auto; display: grid; gap: 1rem; }
+.settings h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
+.row { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; padding: .9rem 1.1rem; border-top: 1px solid var(--border); }
+.row:first-of-type { border-top: 0; }
+.row .label { font-weight: 600; font-size: .95rem; }
+.row .desc { font-size: .82rem; color: var(--muted); margin-top: .3rem; line-height: 1.5; }
+.row .value { font-size: .9rem; color: var(--text2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.row .status { font-size: .8rem; margin-top: .5rem; }
+.row .status.warn { color: var(--warn); }
+.row .status a { color: inherit; }
+
+.switch { position: relative; flex-shrink: 0; width: 44px; height: 24px; margin-top: .1rem; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+.switch .track { position: absolute; inset: 0; border-radius: 999px; background: var(--surface2); border: 1px solid var(--border); }
+.switch .track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--muted); }
+.switch.ready .track { transition: background .15s; }
+.switch.ready .track::after { transition: transform .15s, background .15s; }
+.switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(20px); background: #fff; }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch input:disabled { cursor: default; }
+.foot { font-size: .78rem; color: var(--muted); padding: .25rem 1.1rem 1rem; }
+.logbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .25rem 1.1rem .75rem; }
+.logbar .spacer { flex: 1; }
+.logbar a.btn { color: inherit; text-decoration: none; }
+.logbar label { font-size: .82rem; color: var(--text2); display: inline-flex; gap: .35rem; align-items: center; cursor: pointer; }
+.logview { margin: 0 1.1rem; height: 360px; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+           border-radius: 8px; padding: .6rem .75rem; font-family: ui-monospace, monospace; font-size: .74rem;
+           line-height: 1.45; color: var(--text2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.logview .w { color: var(--warn); }
+.logview .e { color: var(--cat-7); }
+.logview .empty { color: var(--muted); font-family: inherit; }
+code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+{% include "_nav.html" %}
+<div class="page">
+  <div class="settings">
+    <div class="card">
+      <h2>Whisker app</h2>
+      <div class="row">
+        <div>
+          <div class="label" id="wbLabel">Send cat corrections to Whisker</div>
+          <div class="desc">When you change which cat a visit was, mark it Unknown, or revert it on the Events page,
+            the change is also made in your Whisker account. That also corrects the cat's weight history in
+            the Whisker app. Whisker only accepts changes to visits from the last 7 days; older
+            corrections, and notes, stay in this app only.</div>
+          <div class="status" id="wbStatus"></div>
+        </div>
+        <label class="switch"><input type="checkbox" id="wbToggle" role="switch" aria-labelledby="wbLabel" disabled><span class="track"></span></label>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label" id="tzLabel">Clip list timezone</div>
+          <div class="desc">The timezone sent when asking Whisker for clips; dates are read as days in it.
+            Whisker leaves recent clips out of the list when this doesn't match the robot, so leave it on
+            Robot unless clips go missing. Takes effect at the next sync.</div>
+          <div class="status" id="tzStatus"></div>
+        </div>
+        <div class="seg" id="tzSeg" role="radiogroup" aria-labelledby="tzLabel">
+          <button data-tz="robot" role="radio">Robot</button><button data-tz="server" role="radio">Server</button><button data-tz="utc" role="radio">UTC</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Display</h2>
+      <div class="row">
+        <div>
+          <div class="label" id="unitLabel">Weight unit</div>
+          <div class="desc">Used for cat weights, charts and insights everywhere in the app.</div>
+          <div class="status" id="unitStatus"></div>
+        </div>
+        <div class="seg" id="unitSeg" role="radiogroup" aria-labelledby="unitLabel">
+          <button data-unit="kg" role="radio">kg</button><button data-unit="lb" role="radio">lb</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Set in compose.yml</h2>
+      <div class="row"><div><div class="label">Sync schedule</div><div class="desc">How often activity and clips are fetched (<code>LR_DOWNLOAD_INTERVAL</code>). Use Refresh to sync sooner.</div></div><div class="value" id="interval">—</div></div>
+      <div class="row"><div><div class="label">Clip retention</div><div class="desc">Clips older than this are deleted unless marked Keep forever (<code>LR_RETENTION_DAYS</code>, 0 = keep all).</div></div><div class="value" id="retention">—</div></div>
+      <div class="foot">Change these in <code>compose.yml</code>, then run <code>docker compose up -d</code>.</div>
+    </div>
+
+    <div class="card">
+      <h2>Logs</h2>
+      <div class="logbar">
+        <div class="seg" id="logSeg" role="radiogroup" aria-label="Which log">
+          <button data-src="sync" role="radio" title="Downloads, activity sync, Whisker updates">Sync</button><button data-src="web" role="radio" title="Web server warnings and errors">Web</button>
+        </div>
+        <label><input type="checkbox" id="logProblems"> Warnings &amp; errors only</label>
+        <span class="spacer"></span>
+        <button class="btn" id="logRefresh">Refresh</button>
+        <a class="btn" id="logDownload" download>Download</a>
+      </div>
+      <div class="logview" id="logView" tabindex="0" aria-label="Log output"></div>
+      <div class="foot" id="logFoot">Showing the newest 500 lines. Files rotate at 1 MB and keep 3 old copies.</div>
+    </div>
+  </div>
+</div>
+<script src="{{ asset('common.js') }}"></script>
+<script>
+function every(secs) {
+  if (secs % 86400 === 0) return `Every ${secs / 86400 === 1 ? 'day' : `${secs / 86400} days`}`;
+  if (secs % 3600 === 0) return `Every ${secs / 3600 === 1 ? 'hour' : `${secs / 3600} hours`}`;
+  return `Every ${Math.round(secs / 60)} min`;
+}
+
+function paint(st) {
+  el('wbToggle').checked = st.writeback;
+  el('wbToggle').disabled = false;
+  requestAnimationFrame(() => el('wbToggle').parentElement.classList.add('ready'));
+  const parts = [];
+  if (st.pending) parts.push(`${st.pending} update${st.pending === 1 ? '' : 's'} waiting to send`);
+  if (st.failed) parts.push(`<a href="/events?filter=corrected">${st.failed} update${st.failed === 1 ? '' : 's'} failed</a>; open the visit to retry`);
+  el('wbStatus').innerHTML = parts.join(' · ');
+  el('wbStatus').className = 'status' + (st.failed ? ' warn' : '');
+  el('unitSeg').querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.unit === st.unit);
+    b.setAttribute('aria-checked', b.dataset.unit === st.unit);
+  });
+  el('tzSeg').querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.tz === st.clip_tz);
+    b.setAttribute('aria-checked', b.dataset.tz === st.clip_tz);
+  });
+  el('tzSeg').querySelector('[data-tz="server"]').title = st.server_tz;
+  el('interval').textContent =st.sync_interval ? every(st.sync_interval) : 'Once at startup';
+  const r = st.retention || {};
+  el('retention').textContent = r.days ? `${r.days} days` : 'Keep everything';
+}
+
+el('wbToggle').addEventListener('change', async e => {
+  const want = e.target.checked;
+  e.target.disabled = true;
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ writeback: want }) }));
+  } catch {
+    e.target.checked = !want;
+    e.target.disabled = false;
+    el('wbStatus').textContent = "Couldn't save. Try again.";
+    el('wbStatus').className = 'status warn';
+  }
+});
+
+el('unitSeg').addEventListener('click', async e => {
+  const unit = e.target.dataset.unit;
+  if (!unit || e.target.classList.contains('on')) return;
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ unit }) }));
+    el('unitStatus').textContent = '';
+  } catch {
+    el('unitStatus').textContent = "Couldn't save. Try again.";
+    el('unitStatus').className = 'status warn';
+  }
+});
+
+el('tzSeg').addEventListener('click', async e => {
+  const clip_tz = e.target.dataset.tz;
+  if (!clip_tz || e.target.classList.contains('on')) return;
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ clip_tz }) }));
+    el('tzStatus').textContent = '';
+  } catch {
+    el('tzStatus').textContent = "Couldn't save. Try again.";
+    el('tzStatus').className = 'status warn';
+  }
+});
+
+let logSrc = store.get('lr-log', 'sync');
+let logLines = [];
+
+function paintLog() {
+  const view = el('logView');
+  const problems = el('logProblems').checked;
+  // continuation lines (tracebacks) inherit the level of the line they belong to
+  let level = '';
+  const rows = [];
+  for (const line of logLines) {
+    const m = line.match(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ (\w+) /);
+    if (m) level = m[1];
+    const cls = level === 'WARNING' ? 'w' : (level === 'ERROR' || level === 'CRITICAL') ? 'e' : '';
+    if (problems && !cls) continue;
+    const div = document.createElement('div');
+    if (cls) div.className = cls;
+    div.textContent = line;
+    rows.push(div);
+  }
+  if (!rows.length) {
+    const div = document.createElement('div');
+    div.className = 'empty';
+    div.textContent = logLines.length ? 'No warnings or errors in the latest lines.' : 'Nothing logged yet.';
+    rows.push(div);
+  }
+  view.replaceChildren(...rows);
+  view.scrollTop = view.scrollHeight;
+}
+
+async function loadLog() {
+  el('logSeg').querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.src === logSrc);
+    b.setAttribute('aria-checked', b.dataset.src === logSrc);
+  });
+  el('logDownload').href = `/api/logs/${logSrc}/download`;
+  try {
+    const r = await api(`/api/logs/${logSrc}?lines=500`, { cache: 'no-store' });
+    logLines = r.lines;
+    el('logDownload').hidden = !r.exists;
+  } catch {
+    logLines = [];
+    el('logView').textContent = "Couldn't load the log.";
+    return;
+  }
+  paintLog();
+}
+
+el('logSeg').addEventListener('click', e => {
+  const src = e.target.dataset.src;
+  if (!src || src === logSrc) return;
+  logSrc = src;
+  store.set('lr-log', src);
+  loadLog();
+});
+el('logProblems').addEventListener('change', paintLog);
+el('logRefresh').addEventListener('click', loadLog);
+loadLog();
+
+api('/api/settings').then(paint).catch(() => {
+  el('wbStatus').textContent = "Couldn't load settings.";
+  el('wbStatus').className = 'status warn';
+});
+</script>
+<script src="{{ asset('sync.js') }}"></script>
+</body>
+</html>
