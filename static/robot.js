@@ -1,13 +1,16 @@
 const SERIAL = el('root').dataset.serial;
 const ACTIONS = [
-  { cmd: 'clean', label: 'Start a clean cycle', button: 'Clean now', confirm: 'Yes, start cycle',
+  { cmd: 'clean', button: 'Clean', title: 'Start a clean cycle?', confirm: 'Start cycle',
+    icon: '<path d="M21 12a9 9 0 1 1-2.6-6.4M21 3.5V9h-5.5"/>',
     desc: 'Rotates the globe now and sifts waste into the drawer. Make sure no cat is inside.' },
-  { cmd: 'reset_drawer', label: 'Tare', button: 'Tare', confirm: 'Yes, tare',
+  { cmd: 'reset_drawer', button: 'Tare', title: 'Tare the scale?', confirm: 'Tare',
+    icon: '<path d="M12 4v16M7 20h10M4 7h16M7 7l-3 6.5a3 3 0 0 0 6 0L7 7zM17 7l-3 6.5a3 3 0 0 0 6 0L17 7z"/>',
     desc: 'Resets the scale. Do this after emptying the waste drawer or filling the hopper with litter.' },
-  { cmd: 'remote_reset', label: 'Remote reset', button: 'Reset robot', confirm: 'Yes, reset robot',
+  { cmd: 'remote_reset', button: 'Reset', title: 'Reset the robot?', confirm: 'Reset robot',
+    icon: '<path d="M12 3v9M17.7 6.3a8 8 0 1 1-11.4 0"/>',
     desc: 'Clears errors, e.g. after a jam or a pinch detection. The robot may run a cycle afterwards.' },
 ];
-const s = { data: null, armed: null, armTimer: null, poll: null, autoRefreshed: false };
+const s = { data: null, confirming: null, poll: null, autoRefreshed: false };
 
 const ago = ts => {
   if (!ts) return 'never';
@@ -57,7 +60,8 @@ function render() {
   </div>
   <div class="card panel">
     <h2>Actions</h2>
-    ${ACTIONS.map(actionRow).join('')}
+    <div class="acts">${ACTIONS.map(actionButton).join('')}</div>
+    ${ACTIONS.map(actionError).join('')}
   </div>
   <div class="tiles">
     ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
@@ -121,18 +125,30 @@ function tile(k, v, sub, bar, warn) {
   return `<div class="card tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(sub || '')}</div>${b}</div>`;
 }
 
-function actionRow(a) {
+function actionButton(a) {
   const last = s.data.latest[a.cmd];
   const inFlight = busy(last);
   let res = '';
-  if (inFlight) res = `<div class="res busy">⟳ Sending to the robot…</div>`;
-  else if (last && last.status === 'error') res = `<div class="res err">⚠ Failed ${esc(ago(last.updated))}: ${esc(last.error || 'unknown error')}</div>`;
+  if (inFlight) res = `<div class="res busy">Sending…</div>`;
   else if (last && last.status === 'done') res = `<div class="res ok">✓ Sent ${esc(ago(last.updated))}</div>`;
-  const armed = s.armed === a.cmd;
-  const btns = armed
-    ? `<button class="btn go" data-go="${a.cmd}">${esc(a.confirm)}</button><button class="btn" data-cancel>Cancel</button>`
-    : `<button class="btn" data-arm="${a.cmd}" ${inFlight ? 'disabled' : ''}>${inFlight ? 'Sending…' : esc(a.button)}</button>`;
-  return `<div class="act"><div><div class="label">${esc(a.label)}</div><div class="desc">${esc(a.desc)}</div>${res}</div><div class="btns">${btns}</div></div>`;
+  return `<div class="act"><button class="btn act-btn" data-act="${a.cmd}" title="${esc(a.desc)}" ${inFlight ? 'disabled' : ''}>
+    <svg viewBox="0 0 24 24" aria-hidden="true">${a.icon}</svg><span>${esc(a.button)}</span></button>${res}</div>`;
+}
+
+function actionError(a) {
+  const last = s.data.latest[a.cmd];
+  if (!last || busy(last) || last.status !== 'error') return '';
+  return `<div class="act-err">⚠ ${esc(a.button)} failed ${esc(ago(last.updated))}: ${esc(last.error || 'unknown error')}</div>`;
+}
+
+function confirmAction(cmd) {
+  const a = ACTIONS.find(x => x.cmd === cmd);
+  s.confirming = cmd;
+  el('confirmTitle').textContent = a.title;
+  el('confirmDesc').textContent = a.desc;
+  el('confirmGo').textContent = a.confirm;
+  el('confirm').returnValue = '';
+  el('confirm').showModal();
 }
 
 // ---------------------------------------------------------------- data
@@ -173,22 +189,15 @@ async function send(cmd) {
 el('root').addEventListener('click', e => {
   const t = e.target;
   if (t.id === 'refreshNow') { send('refresh'); return; }
-  const arm = t.closest('[data-arm]'), go = t.closest('[data-go]');
-  if (arm) {
-    s.armed = arm.dataset.arm;
-    clearTimeout(s.armTimer);
-    s.armTimer = setTimeout(() => { s.armed = null; render(); }, 6000);
-    render();
-    el('root').querySelector('[data-go]')?.focus();
-  } else if (go) {
-    s.armed = null;
-    clearTimeout(s.armTimer);
-    send(go.dataset.go);
-  } else if (t.closest('[data-cancel]')) {
-    s.armed = null;
-    render();
-  }
+  const act = t.closest('[data-act]');
+  if (act) confirmAction(act.dataset.act);
 });
+el('confirm').addEventListener('close', () => {
+  if (el('confirm').returnValue === 'ok' && s.confirming) send(s.confirming);
+  s.confirming = null;
+});
+// a click on the dimmed backdrop lands on the <dialog> itself (the form fills its inside)
+el('confirm').addEventListener('click', e => { if (e.target === el('confirm')) el('confirm').close(); });
 window.addEventListener('lr-synced', load);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 load();

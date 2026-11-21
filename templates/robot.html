@@ -40,13 +40,19 @@
 .cols.solo { grid-template-columns: 1fr; }
 @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
 .panel h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
-.act { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; padding: .9rem 1.1rem; border-top: 1px solid var(--border); }
-.act:first-of-type { border-top: 0; }
-.act .label { font-weight: 600; }
-.act .desc { font-size: .82rem; color: var(--muted); margin-top: .25rem; line-height: 1.5; }
-.act .res { font-size: .8rem; margin-top: .4rem; }
-.act .res.ok { color: var(--teal); } .act .res.err { color: var(--warn); } .act .res.busy { color: var(--text2); }
-.act .btns { display: flex; gap: .4rem; flex-shrink: 0; }
+.acts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; padding: .5rem 1.1rem 1rem; }
+.act { display: grid; gap: .35rem; text-align: center; align-content: start; }
+.act-btn { display: flex; align-items: center; justify-content: center; gap: .45rem; padding: .65rem .5rem; font-weight: 600; font-size: .9rem; }
+.act-btn svg { width: 20px; height: 20px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.act .res { font-size: .75rem; }
+.act .res.ok { color: var(--teal); } .act .res.busy { color: var(--text2); }
+.act-err { margin: 0 1.1rem 1rem; background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .45rem .7rem; font-size: .82rem; }
+.confirm { margin: auto; padding: 0; width: min(26rem, calc(100vw - 2rem)); background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); }
+.confirm::backdrop { background: rgba(0, 0, 0, .6); }
+.confirm form { padding: 1.2rem; display: grid; gap: .75rem; }
+.confirm h3 { font-size: 1.05rem; font-weight: 650; }
+.confirm p { font-size: .88rem; color: var(--text2); line-height: 1.5; }
+.confirm .btns { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .25rem; }
 .btn.go { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn:disabled { opacity: .5; cursor: default; }
 .list { padding: .25rem 1.1rem 1rem; display: grid; gap: .35rem; font-size: .84rem; }
@@ -101,6 +107,13 @@
     </div>
   </div>
 </div>
+<dialog class="confirm" id="confirm" aria-labelledby="confirmTitle">
+  <form method="dialog">
+    <h3 id="confirmTitle"></h3>
+    <p id="confirmDesc"></p>
+    <div class="btns"><button class="btn" value="cancel">Cancel</button><button class="btn go" value="ok" id="confirmGo"></button></div>
+  </form>
+</dialog>
 <script src="{{ asset('common.js') }}"></script>
 <script src="{{ asset('robot.js') }}"></script>
 <script src="{{ asset('live.js') }}"></script>
