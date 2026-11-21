@@ -26,6 +26,8 @@
 .faults div { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .45rem .7rem; font-size: .85rem; }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; }
+/* phones are just under the width two 190px tiles need; keep two per row there */
+@media (max-width: 600px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; } }
 .tile { padding: .9rem 1rem; }
 .tile .k { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .tile .v { font-size: 1.45rem; font-weight: 650; margin-top: .2rem; font-variant-numeric: tabular-nums; }
