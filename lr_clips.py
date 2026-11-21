@@ -651,6 +651,10 @@ async def main() -> int:
                 except Exception:
                     LOG.exception("retention failed")
                 try:
+                    await asyncio.to_thread(unassign_ignored)
+                except Exception:
+                    LOG.exception("unassigning ignored visits failed")
+                try:
                     await asyncio.to_thread(lr_notify.after_sync)
                 except Exception:
                     LOG.exception("notifications failed")
@@ -666,6 +670,15 @@ async def main() -> int:
         if worker:
             worker.cancel()
         await account.disconnect()
+
+
+def unassign_ignored() -> None:
+    """Queue removing the cat Whisker gave to visits too light to be a cat (see web.mark_ignored)."""
+    import web  # the visit rules live with the web UI
+    with web.app.app_context():
+        n = web.queue_ignored_unassigns()
+    if n:
+        LOG.info("Removing the cat from %d visit(s) under %.1f lb in Whisker", n, web.IGNORE_UNDER_LB)
 
 
 SMALL_HEIGHT = 360        # small copies: 360p H.264, about 5% of the original's size

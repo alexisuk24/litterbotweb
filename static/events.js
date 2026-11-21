@@ -8,6 +8,11 @@ const s = {
 
 const petName = id => id === UNKNOWN ? 'Unknown' : (s.pets[id]?.name ?? 'No cat');
 const petSlot = id => s.pets[id]?.slot ?? -1;
+const IGNORED_WHY = {
+  light: 'Under 2.6 lb, too light to be a cat: a scale blip or something left on the robot.',
+  no_clip: 'No cat assigned and no camera clip recorded around it.',
+};
+
 function catChip(id, extra = '') {
   return `<span class="chip">${catBadge(s.pets[id], petSlot(id), 16)}${esc(petName(id))}${extra}</span>`;
 }
@@ -117,6 +122,7 @@ function evRow(v) {
   const thumb = v.thumb ? `style="background-image:url('${esc(v.thumb)}')"` : '';
   const badges = [];
   if (v.corrected) badges.push('<span class="badge edit">Edited</span>');
+  if (v.ignored) badges.push(`<span class="badge off" title="${esc(IGNORED_WHY[v.ignored])}">Ignored</span>`);
   if (v.review) badges.push(`<span class="badge warn" title="${v.pet ? `Weight is closer to ${esc(petName(v.suggested))}` : 'No cat assigned'}">Check</span>`);
   const details = isVisit ? [
     v.weight != null ? fmtW(v.weight) : null,
@@ -126,7 +132,7 @@ function evRow(v) {
   return `<div class="ev${v.id === s.active ? ' active' : ''}" data-id="${esc(v.id)}">
     <div class="thumb" ${thumb}>${v.thumb ? '' : (v.clip_count ? '▶' : '—')}</div>
     <div class="main">
-      <div class="row1"><span class="time">${fmtTime(v.ts)}</span>${isVisit ? catChip(v.pet) : `<span class="muted" style="font-size:.85rem">${esc(typeLabel(v.type))}</span>`}</div>
+      <div class="row1"><span class="time">${fmtTime(v.ts)}</span>${isVisit && v.ignored ? '<span class="chip ignored">Ignored</span>' : isVisit ? catChip(v.pet) : `<span class="muted" style="font-size:.85rem">${esc(typeLabel(v.type))}</span>`}</div>
       <div class="row2">${details.map(esc).join('<span>·</span>')}${cameraTag(v)}</div>
     </div>
     <div class="side">${badges.join('')}${v.clip_count > 1 ? `<span class="muted" style="font-size:.7rem">${v.clip_count} clips</span>` : ''}</div>
@@ -353,7 +359,12 @@ function pickHtml(v) {
   }).join('') + btn(UNKNOWN, 'Unknown / other', '', '0');
 
   let callout = '';
-  if (v.review) {
+  if (v.ignored) {
+    const whisker = v.ignored === 'light' && v.api_pet ? ' The cat Whisker assigned is removed there too.' : '';
+    const fix = v.ignored === 'light' ? '' : ' Choose a cat below if it was a real visit.';
+    callout = `<div class="callout muted">Ignored: ${esc(IGNORED_WHY[v.ignored])}${whisker} It isn't counted in the
+      Cats page stats.${fix}</div>`;
+  } else if (v.review) {
     callout = v.pet
       ? `<div class="callout">This visit weighed ${fmtW(v.weight)}, which is closer to ${esc(petName(v.suggested))} than ${esc(petName(v.pet))}. Check the clip.</div>`
       : `<div class="callout">No cat was assigned to this visit.${v.suggested ? ` By weight it looks like ${esc(petName(v.suggested))}.` : ''}</div>`;
@@ -370,9 +381,9 @@ function pickHtml(v) {
   return `<div class="section">
     <h3><span>Who was this?</span><span class="saved" id="saved">Saved</span></h3>
     ${callout}
-    <div class="pick" id="pick">${buttons}</div>
+    ${v.ignored === 'light' ? '' : `<div class="pick" id="pick">${buttons}</div>`}
     <div class="actions">
-      ${(v.corrected || v.note) ? `<button class="btn" id="revertBtn">Revert to what the robot recorded <kbd>u</kbd></button>` : ''}
+      ${(v.corrected || v.note) && v.ignored !== 'light' ? `<button class="btn" id="revertBtn">Revert to what the robot recorded <kbd>u</kbd></button>` : ''}
       <span class="muted" style="font-size:.78rem">${recorded}</span>
     </div>
     ${camLine}
@@ -461,11 +472,11 @@ async function save(body, method = 'POST') {
 
 async function assign(petId) {
   const v = s.detail?.event;
-  if (!v || v.type !== 'PET_VISIT') return;
+  if (!v || v.type !== 'PET_VISIT' || v.ignored === 'light') return;  // too light to be a cat
   await save({ pet_id: petId });
   if (s.f.filter === 'review') step(1);
 }
-const revert = () => s.detail?.event.type === 'PET_VISIT' && save(null, 'DELETE');
+const revert = () => s.detail?.event.type === 'PET_VISIT' && s.detail.event.ignored !== 'light' && save(null, 'DELETE');
 
 function step(d) {
   if (!s.events.length) return;

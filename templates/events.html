@@ -82,6 +82,8 @@
 .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; align-items: center; }
 .note { width: 100%; min-height: 54px; resize: vertical; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; font-size: .85rem; }
 .hint { font-size: .78rem; color: var(--muted); margin-top: .5rem; line-height: 1.6; }
+.chip.ignored { color: var(--muted); font-style: italic; }
+.callout.muted { background: var(--surface2); color: var(--text2); }
 .callout { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .5rem .7rem; font-size: .82rem; margin-bottom: .75rem; }
 .nearby { font-size: .8rem; display: grid; gap: .25rem; }
 .nearby div { display: flex; gap: .6rem; color: var(--text2); font-variant-numeric: tabular-nums; }
@@ -127,6 +129,7 @@
       <button data-v="" class="on">All</button>
       <button data-v="review"><span class="long">Needs review</span><span class="short">Review</span></button>
       <button data-v="corrected">Edited</button>
+      <button data-v="ignored">Ignored</button>
     </div>
     <button class="btn filt-btn" id="filtBtn" aria-expanded="false" aria-controls="moreFilters">Filters <span class="filt-n" id="filtN" hidden></span></button>
     <div class="more-filters" id="moreFilters">

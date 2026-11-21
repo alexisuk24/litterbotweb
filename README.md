@@ -15,6 +15,11 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   Visits whose weight looks like a different cat (or that have no cat) are flagged
   **Check**; the *Needs review* filter lists just those. Keyboard: `↑/↓` move,
   `1–9` assign cat, `0` unknown, `u` undo.
+  Visits are marked **Ignored** when they weigh under 2.6 lb (too light to be a cat; any
+  cat Whisker assigned is removed there too, for visits from the last 7 days) or have no
+  cat and no camera clip. Ignored visits are left out of the Cats page, warnings, baselines
+  and vet reports; the *Ignored* filter lists them. Visits under 2.6 lb can't be given a
+  cat; for the others, assigning a cat yourself counts the visit again.
   Visits also show the camera's own cat recognition (from its AI detections around the
   visit) as a similarity score, e.g. "📷 74%", highlighted with the cat's name when the
   camera thinks it was a different cat.

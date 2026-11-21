@@ -440,6 +440,7 @@ def load_visits(start: float | None = None, end: float | None = None, robot: str
         robot_pet = lr_db.first_pet(r["original_pet_ids"] or r["pet_ids"])
         pet = r["o_pet"] or whisker_pet
         pet = None if pet == lr_db.UNKNOWN_PET else pet
+        manual_cat = r["o_pet"] not in (None, lr_db.UNKNOWN_PET)
         out.append({
             "id": r["id"], "ts": r["ts"], "type": r["type"], "subtype": r["subtype"],
             "robot": r["robot_serial"], "robot_name": r["robot_name"],
@@ -450,8 +451,54 @@ def load_visits(start: float | None = None, end: float | None = None, robot: str
             "corrected": r["type"] == "PET_VISIT" and pet != robot_pet,
             "note": r["o_note"] or "",
             "camera_event_ids": json.loads(r["camera_event_ids"] or "[]"),
+            "manual_cat": manual_cat,
         })
+    mark_ignored(out)
     return out
+
+
+IGNORE_UNDER_LB = 2.6  # lighter than any cat: a scale blip, or something left on the robot
+
+
+def mark_ignored(visits) -> None:
+    """Set each visit's `ignored` reason: 'light' (under IGNORE_UNDER_LB; any cat Whisker
+    assigned is removed there, see queue_ignored_unassigns) or 'no_clip' (no cat and no clip
+    recorded around it). Ignored visits show no cat and are left out of stats, baselines,
+    warnings and reports. A light visit can't be given a cat (api_override refuses); a cat
+    you assign yourself to a no-clip visit makes it count again."""
+    pending = []
+    for v in visits:
+        v["ignored"] = None
+        if v["type"] != "PET_VISIT":
+            continue
+        if v["weight"] is not None and v["weight"] < IGNORE_UNDER_LB:
+            v["ignored"] = "light"
+        elif not v["manual_cat"] and not v["pet"]:
+            pending.append(v)
+    with_clips = _visits_with_clips(pending)
+    for v in pending:
+        if v["id"] not in with_clips:
+            v["ignored"] = "no_clip"
+    for v in visits:
+        if v["ignored"]:
+            v["pet"], v["corrected"] = None, False
+
+
+def queue_ignored_unassigns() -> int:
+    """Ask the collector to remove the cat Whisker assigned to light (ignored) visits, within
+    Whisker's edit window. Each visit is sent once; a failure isn't retried automatically."""
+    conn = db()
+    if not lr_db.writeback_enabled(conn):
+        return 0
+    n = 0
+    for v in load_visits(time.time() - lr_db.WHISKER_EDIT_WINDOW_S, types=("PET_VISIT",)):
+        if v["ignored"] == "light" and v["whisker_pet"] and not lr_db.latest_push(conn, v["id"]):
+            lr_db.enqueue_push(conn, v["id"], None)
+            n += 1
+    conn.commit()
+    if n:
+        lr_db.wake()
+    return n
 
 
 def reference_weights(pets) -> dict[str, float]:
@@ -460,7 +507,7 @@ def reference_weights(pets) -> dict[str, float]:
     since = time.time() - 30 * 86400
     by_pet = defaultdict(list)
     for v in load_visits(start=since):
-        if v["pet"] and v["weight"]:
+        if v["pet"] and v["weight"] and not v["ignored"]:
             by_pet[v["pet"]].append(v["weight"])
     refs = {}
     for p in pets:
@@ -475,7 +522,7 @@ def annotate(v, refs, active_ids):
     """Add a weight-based cat suggestion and a needs-review flag."""
     v["suggested"] = None
     v["review"] = False
-    if v["type"] != "PET_VISIT":
+    if v["type"] != "PET_VISIT" or v.get("ignored"):
         return v
     w = v["weight"]
     if w and refs:
@@ -604,7 +651,8 @@ def attach_camera(visits, detail=False):
                                       for d in hits]
 
 
-def attach_clip_summary(visits):
+def _clip_matches(visits):
+    """Yield (visit, the clips recorded around it), including clips whose video retention removed."""
     if not visits:
         return
     lo = min(v["ts"] for v in visits) - MATCH_BEFORE_S - 600
@@ -614,7 +662,15 @@ def attach_clip_summary(visits):
     for v in visits:
         a = bisect.bisect_left(times, v["ts"] - MATCH_BEFORE_S - (v["duration"] or 0))
         b = bisect.bisect_right(times, v["ts"] + MATCH_AFTER_S)
-        matched = [c for c in rows[a:b] if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
+        yield v, [c for c in rows[a:b] if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
+
+
+def _visits_with_clips(visits) -> set:
+    return {v["id"] for v, matched in _clip_matches(visits) if matched}
+
+
+def attach_clip_summary(visits):
+    for v, matched in _clip_matches(visits):
         v["clip_count"] = len(matched)
         best = min(matched, key=lambda c: abs(c["ts"] - (v["ts"] - (v["duration"] or 0))), default=None)
         v["thumb"] = media_url("media", best["robot_folder"], best["thumb_file"]) if best else None
@@ -663,7 +719,7 @@ def api_events():
 
     pet = request.args.get("pet")
     if pet == "none":
-        visits = [v for v in visits if v["type"] == "PET_VISIT" and not v["pet"]]
+        visits = [v for v in visits if v["type"] == "PET_VISIT" and not v["pet"] and not v["ignored"]]
     elif pet:
         visits = [v for v in visits if v["pet"] == pet]
     flt = request.args.get("filter")
@@ -671,6 +727,8 @@ def api_events():
         visits = [v for v in visits if v["review"]]
     elif flt == "corrected":
         visits = [v for v in visits if v["corrected"]]
+    elif flt == "ignored":
+        visits = [v for v in visits if v["ignored"]]
 
     total = len(visits)
     size = min(int(request.args.get("size", 100)), 500)
@@ -712,20 +770,25 @@ def api_event(event_id):
 @app.route("/api/events/<event_id>/override", methods=["POST", "DELETE"])
 def api_override(event_id):
     conn = db()
-    act = conn.execute("SELECT type, ts, pet_ids, original_pet_ids FROM activities WHERE id = ?", (event_id,)).fetchone()
+    act = conn.execute("SELECT type, ts, pet_ids, original_pet_ids, pet_weight FROM activities WHERE id = ?",
+                       (event_id,)).fetchone()
     if not act:
         abort(404)
+    # too light to be a cat: notes can change, the cat can't (and Whisker keeps no cat)
+    light = act["type"] == "PET_VISIT" and act["pet_weight"] is not None and act["pet_weight"] < IGNORE_UNDER_LB
     whisker_pet = lr_db.first_pet(act["pet_ids"])
     robot_pet = lr_db.first_pet(act["original_pet_ids"] or act["pet_ids"])
     push_to = ...  # Ellipsis = no Whisker change
     if request.method == "DELETE":
         conn.execute("DELETE FROM visit_overrides WHERE activity_id = ?", (event_id,))
-        push_to = robot_pet
+        push_to = ... if light else robot_pet
     else:
         body = request.get_json(force=True, silent=True) or {}
         cur = conn.execute("SELECT * FROM visit_overrides WHERE activity_id = ?", (event_id,)).fetchone()
         pet_id = cur["pet_id"] if cur else None
         note = cur["note"] if cur else None
+        if "pet_id" in body and light and body["pet_id"] not in (None, "", lr_db.UNKNOWN_PET):
+            return jsonify(reason="too_light", error=f"Visits under {IGNORE_UNDER_LB} lb can't be given a cat."), 409
         if "pet_id" in body:
             pet_id = body["pet_id"] or None
             if pet_id not in (None, lr_db.UNKNOWN_PET) and not conn.execute(
@@ -917,7 +980,8 @@ def cat_baselines(pets, refs, active, now, tz, end=None):
     first = db().execute("SELECT MIN(ts) AS ts FROM activities").fetchone()["ts"] or end
     recent_start = end - RECENT_DAYS * 86400
     base_start = max(recent_start - BASELINE_DAYS * 86400, first)
-    visits = [annotate(v, refs, active) for v in load_visits(base_start, end, types=("PET_VISIT",))]
+    visits = [annotate(v, refs, active) for v in load_visits(base_start, end, types=("PET_VISIT",))
+              if not v["ignored"]]
     # whole local days inside the baseline window (a partial first day would undercount)
     day = datetime.fromtimestamp(base_start, tz).replace(hour=0, minute=0, second=0, microsecond=0)
     if day.timestamp() < base_start:
@@ -1030,7 +1094,7 @@ def api_analysis():
     names = {p["id"]: p["name"] for p in pets}
     refs = reference_weights(pets)
     active = {p["id"] for p in pets if p["active"]}
-    everything = load_visits(start - n_days * 86400, None, robot, types=None)
+    everything = [v for v in load_visits(start - n_days * 86400, None, robot, types=None) if not v["ignored"]]
     in_range = [annotate(v, refs, active) for v in everything if v["ts"] >= start]
     visits = [v for v in in_range if v["type"] == "PET_VISIT"]
     prev_visits = [v for v in everything if v["ts"] < start and v["type"] == "PET_VISIT"]
@@ -1352,7 +1416,7 @@ def vet_report_data(pet, pets, first: date, last: date, tz) -> dict:
     data_start = db().execute("SELECT MIN(ts) AS ts FROM activities").fetchone()["ts"] or start
     pool_start = max(start - BASELINE_DAYS * 86400, data_start)
     pool = sorted((v for v in (annotate(v, refs, active) for v in load_visits(pool_start, end, types=("PET_VISIT",)))
-                   if v["pet"] == pid), key=lambda v: v["ts"])
+                   if v["pet"] == pid and not v["ignored"]), key=lambda v: v["ts"])
     visits = [v for v in pool if v["ts"] >= start]
 
     days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
