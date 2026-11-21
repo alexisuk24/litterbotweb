@@ -1,0 +1,94 @@
+name: PR rules
+
+# Checks a PR's title and branches against CONTRIBUTING.md and comments with what to fix.
+# pull_request_target so it can comment on PRs from forks; it never checks out or runs the
+# PR's code, so that's safe.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  pr-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title
+        id: title
+        continue-on-error: true
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+            release
+          headerPattern: '^(\w*)(?:\(([\w$.\-*/ ]*)\))?!?: (.*)$'
+          headerPatternCorrespondence: type, scope, subject
+          subjectPattern: ^\S.{0,62}[^.\s]$
+          subjectPatternError: |
+            The summary "{subject}" should be 64 characters or fewer and not end with a full stop.
+
+      - name: Check the branches
+        id: branches
+        continue-on-error: true
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          problems=()
+          type=${TITLE%%[(!:]*}
+          if [ "$BASE" = main ]; then
+            if [ "$HEAD" = develop ] && [ "$SAME_REPO" = true ]; then
+              [ "$type" = release ] || problems+=("A release PR (\`develop\` into \`main\`) needs a \`release:\` title.")
+            elif [[ $HEAD == hotfix/* ]] && [ "$SAME_REPO" = true ]; then
+              [ "$type" = fix ] || problems+=("A hotfix PR needs a \`fix:\` title.")
+            else
+              problems+=("PRs into \`main\` only come from \`develop\` (releases) or \`hotfix/*\` branches. Change the base branch to \`develop\`.")
+            fi
+          elif [ "$type" = release ]; then
+            problems+=("\`release:\` is only for the PR from \`develop\` into \`main\`.")
+          fi
+          {
+            echo "problems<<EOF"
+            for p in "${problems[@]}"; do echo "- $p"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          [ ${#problems[@]} -eq 0 ]
+
+      - name: Explain what to fix
+        if: steps.title.outcome == 'failure' || steps.branches.outcome == 'failure'
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: pr-rules
+          message: |
+            ### This PR doesn't follow the [contributing rules](${{ github.server_url }}/${{ github.repository }}/blob/develop/CONTRIBUTING.md) yet
+
+            ${{ steps.title.outputs.error_message }}
+
+            ${{ steps.branches.outputs.problems }}
+
+            PR titles look like `fix(collector): retry clip downloads after a timeout`. Edit the title or the base branch, and this check runs again by itself.
+
+      - name: Remove the comment once it's fixed
+        if: steps.title.outcome == 'success' && steps.branches.outcome == 'success'
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: pr-rules
+          delete: true
+
+      - name: Fail the check
+        if: steps.title.outcome == 'failure' || steps.branches.outcome == 'failure'
+        run: exit 1

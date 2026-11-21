@@ -7,6 +7,48 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+  # Request changes for major findings; approve once they're resolved and the checks pass.
+  auto_approvals:
+    enabled: true
+    min_blocking_severity: major
+  # The PR rules workflow enforces the title format; these cover what a regex can't.
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: |
+        Conventional Commits ("<type>(<scope>): <summary>", see CONTRIBUTING.md). The summary
+        is imperative ("add", not "added"), says what the change does rather than how, and
+        matches what the diff actually changes.
+    description:
+      mode: warning
+    custom_checks:
+      - name: No secrets or personal data
+        mode: error
+        instructions: |
+          Fail if the PR adds or modifies any of: a .env file (other than .env.example with
+          placeholder values), credentials, tokens, API keys, real email addresses or passwords
+          for a Whisker account, *.db or *.db-* files, .mp4 clips, pet photos, log files, or
+          output of `lr_clips.py --dump` (raw Whisker API JSON). Otherwise pass.
+      - name: Dependencies in sync
+        mode: error
+        instructions: |
+          Python packages are installed in two places: the `pip install` in Dockerfile and the
+          "Install dependencies" step in .github/workflows/tests.yml. Fail if the PR adds,
+          removes or changes the version of a package in one of them but not the other. Pass if
+          neither changes, or both change the same way.
+      - name: Docs match behaviour
+        mode: warning
+        instructions: |
+          Fail if the PR adds, renames or removes an environment variable (os.environ / getenv
+          in the Python files) without the same change in README.md's env var table and
+          compose.yml, or changes a setting, volume, port or user-visible behaviour that
+          README.md describes without updating that description. Otherwise pass.
+      - name: Tests for behaviour changes
+        mode: warning
+        instructions: |
+          Fail if the PR changes behaviour in lr_*.py or web.py (not just comments, logging or
+          formatting) without adding or updating a test in tests/ that covers it. Pass for
+          docs-, CI- or test-only PRs.
   path_filters:
     - "!static/vendor/**"   # Chart.js, downloaded at build time
     - "!**/*.min.js"
