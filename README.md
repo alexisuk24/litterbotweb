@@ -108,6 +108,44 @@ count, since restarting wouldn't help; `docker inspect` shows its last error. Do
 reports the status; to restart an unhealthy container automatically, use something like
 [autoheal](https://github.com/willfarrell/docker-autoheal).
 
+### Monitoring with Uptime Kuma
+
+Add an **HTTP(s)** monitor pointed at the same `/api/health` endpoint. It answers 200 when
+everything's fine and 503 when something's wrong, so Kuma's default accepted status codes
+(200-299) already mark it down at the right times.
+
+| Field | Value |
+| --- | --- |
+| Monitor Type | HTTP(s) |
+| Friendly Name | Litter Robot |
+| URL | `http://<host>:2287/api/health` |
+| Heartbeat Interval | 60 seconds |
+| Retries | 2 |
+| Accepted Status Codes | 200-299 (the default) |
+
+Use the address Kuma can reach directly (for example the server's LAN address), not one
+behind a login page such as Cloudflare Access, or Kuma will be checking the login page.
+When the monitor goes down, open the URL to see why, for example:
+
+```json
+{"ok": false, "problem": "no sync has run for 5.0 hours (schedule: every 60 min)",
+ "last_sync": 1795232400.0, "last_error": null, "sync_running": false}
+```
+
+A sync that fails (for example because Whisker is down) keeps the monitor up, since nothing
+on this side can fix it; `last_error` shows the message. For alerts, Kuma's own
+notifications (including Pushover) work alongside the ones this app sends.
+
+If you run [AutoKuma](https://github.com/BigBoot/AutoKuma), which creates Kuma monitors from
+Docker labels, add these to the service in `compose.yml` instead, then set the interval and
+retries in Kuma:
+
+```yaml
+    labels:
+      kuma.litter-robot.http.name: "Litter Robot"
+      kuma.litter-robot.http.url: "http://<host>:2287/api/health"
+```
+
 Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.9.0+, which
 already reverse-engineered the LR5 Pro camera APIs.
 
