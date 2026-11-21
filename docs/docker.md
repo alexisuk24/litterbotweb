@@ -31,7 +31,7 @@ Source, full documentation and issues: https://github.com/alexisuk24/litterbotwe
    ```yaml
    services:
      lr-clips:
-       image: alexisuk24/lr_video_downloader:latest
+       image: alexisuk24/litterbotweb:latest
        container_name: lr-clips
        restart: unless-stopped
        environment:
@@ -70,7 +70,7 @@ The same setup with `docker run`:
 docker run -d --name lr-clips --restart unless-stopped -p 2287:2287 \
   -e LR_USERNAME=you@example.com -e LR_PASSWORD=your-whisker-password -e TZ=Europe/London \
   -v "$PWD/clips:/clips" -v "$PWD/data:/data" \
-  alexisuk24/lr_video_downloader:latest
+  alexisuk24/litterbotweb:latest
 ```
 
 ## Tags

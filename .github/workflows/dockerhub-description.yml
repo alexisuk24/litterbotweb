@@ -20,6 +20,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}  # needs Read, Write & Delete
-          repository: alexisuk24/lr_video_downloader
+          repository: alexisuk24/litterbotweb
           readme-filepath: docs/docker.md
           short-description: ${{ github.event.repository.description }}

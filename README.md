@@ -11,7 +11,7 @@ robot snapshots (litter level, drawer level), and an index of every clip.
 ## Quick start (Docker)
 
 The image is on Docker Hub as
-[`alexisuk24/lr_video_downloader`](https://hub.docker.com/r/alexisuk24/lr_video_downloader).
+[`alexisuk24/litterbotweb`](https://hub.docker.com/r/alexisuk24/litterbotweb).
 In a folder with `clips` and `data` folders owned by uid/gid 1000
 (`sudo chown -R 1000:1000 clips data`):
 
@@ -19,7 +19,7 @@ In a folder with `clips` and `data` folders owned by uid/gid 1000
 # compose.yml
 services:
   lr-clips:
-    image: alexisuk24/lr_video_downloader:latest
+    image: alexisuk24/litterbotweb:latest
     container_name: lr-clips
     restart: unless-stopped
     environment:
@@ -234,7 +234,7 @@ Or as a container that syncs hourly (see [Quick start](#quick-start-docker)): co
 `compose.yml` and `.env.example` to a folder, rename `.env.example` to `.env` and fill it
 in, then run `docker compose pull && docker compose up -d`. Already-downloaded clips are skipped.
 `compose.yml` uses the published image; to run your own changes, build it first under the
-same name (`docker build -t alexisuk24/lr_video_downloader:latest .`), then `docker compose up -d`.
+same name (`docker build -t alexisuk24/litterbotweb:latest .`), then `docker compose up -d`.
 
 Output layout: `clips/<robot name>/<robot name>_<YYYY-MM-DD>_<HH-MM-SS>.mp4`
 
@@ -261,7 +261,7 @@ checks for). `latest` includes the VAAPI drivers for both Intel (`intel`) and AM
 ```bash
 docker buildx build --pull --platform linux/amd64 \
   --provenance=mode=max --sbom=true \
-  -t alexisuk24/lr_video_downloader:latest --push .
+  -t alexisuk24/litterbotweb:latest --push .
 ```
 
 For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DRIVERS=intel`
