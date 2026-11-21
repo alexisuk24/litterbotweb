@@ -100,6 +100,14 @@ Events and Clips pages) are never shrunk or removed. Making either step sooner w
 clips first. Shrinking is limited to 10 minutes per sync; a backlog carries over. Clips
 whose video was removed are never re-downloaded; their visit history stays.
 
+**Health check**: the image has a Docker `HEALTHCHECK` that calls `/api/health` every
+minute. The container shows as *unhealthy* in `docker ps` when the web UI stops answering,
+the database can't be opened, a sync has been running for over 3 hours, or no sync has
+finished in three times the sync interval. A failing sync (e.g. Whisker being down) doesn't
+count, since restarting wouldn't help; `docker inspect` shows its last error. Docker only
+reports the status; to restart an unhealthy container automatically, use something like
+[autoheal](https://github.com/willfarrell/docker-autoheal).
+
 Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.9.0+, which
 already reverse-engineered the LR5 Pro camera APIs.
 

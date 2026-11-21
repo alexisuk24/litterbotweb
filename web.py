@@ -334,6 +334,31 @@ def sync_status():
     }
 
 
+@app.route("/api/health")
+def api_health():
+    """For Docker's HEALTHCHECK: 200 when the web server answers, the database opens and the
+    collector's sync loop isn't stuck; 503 with the reason otherwise. A sync that failed
+    (e.g. Whisker is down) still counts as healthy, since a restart wouldn't fix it; its
+    error is included for `docker inspect`."""
+    now = time.time()
+    try:
+        conn = db()
+        conn.execute("SELECT 1").fetchone()
+    except Exception as err:
+        return jsonify(ok=False, problem=f"database: {err}"), 503
+    started, finished = _fstate("sync_started"), _fstate("sync_finished")
+    running = lr_db.get_state(conn, "sync_running") == "1"
+    interval = lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
+    problem = None
+    if running and now - started > STALE_RUN_S:
+        problem = f"a sync has been running for {(now - started) / 3600:.1f} hours"
+    elif not running and finished and now - finished > 3 * interval + 600:
+        problem = f"no sync has run for {(now - finished) / 3600:.1f} hours (schedule: every {interval // 60} min)"
+    body = {"ok": problem is None, "problem": problem, "sync_running": running,
+            "last_sync": finished or None, "last_error": lr_db.get_state(conn, "sync_error") or None}
+    return jsonify(body), 200 if problem is None else 503
+
+
 @app.route("/api/sync", methods=["GET", "POST"])
 def api_sync():
     if request.method == "GET":

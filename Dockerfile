@@ -74,4 +74,8 @@ COPY static /app/static
 RUN chmod 755 /app/entrypoint.sh && chmod -R a+rX /app
 
 USER app
+# Unhealthy when the web UI stops answering or the sync loop is stuck (see /api/health).
+# With LR_WEB=0 there's no web server in this container to ask, so the check passes.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD ["python", "-c", "import os, urllib.request; os.environ.get('LR_WEB', '1') == '0' or urllib.request.urlopen('http://127.0.0.1:2287/api/health', timeout=8)"]
 ENTRYPOINT ["/app/entrypoint.sh"]
