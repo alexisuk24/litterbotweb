@@ -332,6 +332,15 @@ def get_state(conn: sqlite3.Connection, key: str) -> str | None:
     return row["value"] if row else None
 
 
+SYNC_INTERVALS = (900, 1800, 3600, 7200, 14400, 21600, 43200, 86400)  # choices on the Settings page
+
+
+def sync_interval(conn: sqlite3.Connection, default: int) -> int:
+    """Seconds between syncs: the Settings page's choice, else LR_DOWNLOAD_INTERVAL."""
+    value = get_state(conn, "sync_interval")
+    return int(value) if value and value.isdigit() and int(value) in SYNC_INTERVALS else default
+
+
 def upsert_robot(conn, *, serial, name, folder, timezone_name, model, camera_device_id, raw) -> None:
     conn.execute(
         """INSERT INTO robots (serial, name, folder, timezone, model, camera_device_id, raw, updated_at)

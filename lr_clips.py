@@ -552,7 +552,8 @@ async def main() -> int:
     p.add_argument("--dump", metavar="DIR", help="write raw API JSON for exploration instead of downloading")
     p.add_argument("--interval", type=int,
         default=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")),
-        help="poll for new videos every N seconds (default 3600, 0 = run once); env: LR_DOWNLOAD_INTERVAL")
+        help="poll for new videos every N seconds (default 3600, 0 = run once); env: LR_DOWNLOAD_INTERVAL. "
+             "The Settings page's sync interval overrides this")
     p.add_argument("--update-interval", type=int,
         default=int(os.environ.get("PYBOT_UPDATE_INTERVAL", "86400")),
         help="check for pylitterbot updates every N seconds (default 86400); env: PYBOT_UPDATE_INTERVAL")
@@ -829,16 +830,19 @@ async def outbox_worker(args: argparse.Namespace, account: Account, wake: asynci
         await wait_for_wake(wake, 60, poll=1.5)
 
 
-async def wait_for_next_run(db, interval: int, wake: asyncio.Event | None) -> str:
-    """Sleep until the next scheduled run, waking early for a manual refresh from the web UI."""
-    deadline = time.monotonic() + interval
-    while time.monotonic() < deadline:
+async def wait_for_next_run(db, default_interval: int, wake: asyncio.Event | None) -> str:
+    """Sleep until the next scheduled run, waking early for a manual refresh from the web UI.
+    The interval is re-read while waiting, so a change on the Settings page applies at once."""
+    finished = time.monotonic()
+    while True:
         requested = float(lr_db.get_state(db, "refresh_requested") or 0)
         if requested > float(lr_db.get_state(db, "sync_started") or 0):
             LOG.info("Manual refresh requested")
             return "manual"
-        await wait_for_wake(wake, max(0.1, deadline - time.monotonic()), poll=2)
-    return "scheduled"
+        remaining = finished + lr_db.sync_interval(db, default_interval) - time.monotonic()
+        if remaining <= 0:
+            return "scheduled"
+        await wait_for_wake(wake, max(0.1, remaining), poll=2)
 
 
 async def wait_for_wake(wake: asyncio.Event | None, timeout: float, poll: float) -> None:

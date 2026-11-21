@@ -733,6 +733,7 @@ def api_retry_push(event_id):
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
     conn = db()
+    wake_collector = False
     if request.method == "POST":
         body = request.get_json(force=True, silent=True) or {}
         if "writeback" in body:
@@ -741,6 +742,11 @@ def api_settings():
             if body["unit"] not in ("kg", "lb"):
                 abort(400)
             lr_db.set_state(conn, "weight_unit", body["unit"])
+        if "sync_interval" in body:
+            if body["sync_interval"] not in lr_db.SYNC_INTERVALS:
+                abort(400)
+            lr_db.set_state(conn, "sync_interval", str(body["sync_interval"]))
+            wake_collector = True
         if "clip_tz" in body:
             if body["clip_tz"] not in lr_db.CLIP_TZ_CHOICES:
                 abort(400)
@@ -752,6 +758,8 @@ def api_settings():
             except ValueError as err:
                 return jsonify(error=str(err)), 400
         conn.commit()
+        if wake_collector:
+            lr_db.wake()  # so a waiting collector picks up the new interval now
     pending = conn.execute("SELECT COUNT(*) AS n FROM whisker_pushes WHERE status IN ('pending', 'sending')").fetchone()["n"]
     failed = conn.execute(
         "SELECT COUNT(*) AS n FROM whisker_pushes p WHERE status = 'error' AND id = "
@@ -759,7 +767,8 @@ def api_settings():
     return jsonify(writeback=lr_db.writeback_enabled(conn), unit=weight_unit(), pending=pending, failed=failed,
                    retention=retention_info(), clip_tz=lr_db.clip_list_tz(conn),
                    server_tz=local_timezone_name(), notify=_notify_settings(conn),
-                   sync_interval=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
+                   sync_interval=lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600"))),
+                   sync_intervals=lr_db.SYNC_INTERVALS)
 
 
 def _notify_settings(conn) -> dict:

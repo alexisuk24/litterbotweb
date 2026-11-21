@@ -134,7 +134,7 @@ For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DR
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `LR_DOWNLOAD_INTERVAL` | 3600 | Seconds between sync runs (clips and metadata) |
+| `LR_DOWNLOAD_INTERVAL` | 3600 | Seconds between sync runs (clips and metadata), until a schedule is picked under Settings > Sync schedule |
 | `LR_ACTIVITY_MAX_PAGES` | 50 | Pages of 100 activities to backfill on the first run |
 | `LR_HWACCEL` | auto | Encoder for clips that switch cameras mid-clip (front at 1080p, then globe at 720p), which are re-encoded at 1080p so they don't freeze: `auto` uses VAAPI when `/dev/dri` is mapped in (see `compose.yml`) and the CPU otherwise, `vaapi` warns if no device is found, `off` always uses the CPU |
 | `MATCH_BEFORE_S` / `MATCH_AFTER_S` | 600 / 180 | How far before/after a visit a clip still counts as that visit's clip |

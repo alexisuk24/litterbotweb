@@ -52,6 +52,7 @@
 .lead { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; font-size: .85rem; color: var(--text2); }
 .lead select { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .3rem .5rem; }
 .status.ok { color: var(--teal); }
+select.pick { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .4rem .55rem; font-size: .88rem; flex-shrink: 0; }
 code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; }
 </style>
 </head>
@@ -61,6 +62,15 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
   <div class="settings">
     <div class="card">
       <h2>Whisker app</h2>
+      <div class="row">
+        <div>
+          <div class="label" id="intervalLabel">Sync schedule</div>
+          <div class="desc">How often activity, clips and robot status are fetched from Whisker; notifications are
+            checked after each sync. Applies straight away. Use Refresh to sync sooner.</div>
+          <div class="status" id="intervalStatus"></div>
+        </div>
+        <select id="interval" class="pick" aria-labelledby="intervalLabel" disabled></select>
+      </div>
       <div class="row">
         <div>
           <div class="label" id="wbLabel">Send cat corrections to Whisker</div>
@@ -142,9 +152,8 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
 
     <div class="card">
       <h2>Set in compose.yml</h2>
-      <div class="row"><div><div class="label">Sync schedule</div><div class="desc">How often activity and clips are fetched (<code>LR_DOWNLOAD_INTERVAL</code>). Use Refresh to sync sooner.</div></div><div class="value" id="interval">—</div></div>
       <div class="row"><div><div class="label">Clip retention</div><div class="desc">Clips older than this are deleted unless marked Keep forever (<code>LR_RETENTION_DAYS</code>, 0 = keep all).</div></div><div class="value" id="retention">—</div></div>
-      <div class="foot">Change these in <code>compose.yml</code>, then run <code>docker compose up -d</code>.</div>
+      <div class="foot">Change this in <code>compose.yml</code>, then run <code>docker compose up -d</code>.</div>
     </div>
 
     <div class="card">
@@ -189,7 +198,14 @@ function paint(st) {
     b.setAttribute('aria-checked', b.dataset.tz === st.clip_tz);
   });
   el('tzSeg').querySelector('[data-tz="server"]').title = st.server_tz;
-  el('interval').textContent =st.sync_interval ? every(st.sync_interval) : 'Once at startup';
+  const iv = el('interval');
+  if (!iv.options.length) iv.innerHTML = st.sync_intervals.map(s => `<option value="${s}">${every(s)}</option>`).join('');
+  iv.value = String(st.sync_interval);
+  if (iv.value !== String(st.sync_interval)) {  // LR_DOWNLOAD_INTERVAL set to something not in the list
+    iv.insertAdjacentHTML('afterbegin', `<option value="${st.sync_interval}">${every(st.sync_interval)}</option>`);
+    iv.value = String(st.sync_interval);
+  }
+  iv.disabled = false;
   paintNotify(st.notify);
   const r = st.retention || {};
   el('retention').textContent = r.days ? `${r.days} days` : 'Keep everything';
@@ -206,6 +222,17 @@ el('wbToggle').addEventListener('change', async e => {
     e.target.disabled = false;
     el('wbStatus').textContent = "Couldn't save. Try again.";
     el('wbStatus').className = 'status warn';
+  }
+});
+
+el('interval').addEventListener('change', async e => {
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ sync_interval: Number(e.target.value) }) }));
+    el('intervalStatus').textContent = '';
+  } catch {
+    el('intervalStatus').textContent = "Couldn't save. Try again.";
+    el('intervalStatus').className = 'status warn';
   }
 });
 
