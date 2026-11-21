@@ -34,7 +34,7 @@ function render() {
   const tabs = d.robots.length > 1
     ? `<div class="tabs">${d.robots.map(r => `<a href="/robots/${encodeURIComponent(r.serial)}" class="${r.serial === SERIAL ? 'on' : ''}">${esc(r.name)}</a>`).join('')}</div>` : '';
   if (!d.info) {
-    el('root').innerHTML = tabs + `<div class="card"><div class="empty"><div class="empty-icon">🤖</div>No status for this robot yet. It's collected on the next sync.</div></div>`;
+    show(tabs + `<div class="card"><div class="empty"><div class="empty-icon">🤖</div>No status for this robot yet. It's collected on the next sync.</div></div>`);
     return;
   }
   const faulty = (i.faults || []).length > 0;
@@ -45,7 +45,7 @@ function render() {
   const drawerWarn = (i.drawer_level ?? 0) >= 80;
   const litterWarn = ['LOW', 'EMPTY', 'REFILL'].includes(i.litter_state);
 
-  el('root').innerHTML = tabs + `
+  show(tabs + `
   <div class="card">
     <div class="head">
       <div><h1>${esc(d.robot.name)}</h1><div class="model">${esc(i.model || d.robot.model || '')}${i.setup_date ? ` · set up ${new Date(i.setup_date * 1000).toLocaleDateString()}` : ''}</div></div>
@@ -54,8 +54,7 @@ function render() {
     </div>
     ${faulty ? `<div class="faults">${i.faults.map(f => `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : ''}
     ${d.clips_stale ? `<div class="faults"><div>⚠ Whisker hasn't listed any new videos since ${esc(when(d.clips_stale.newest_clip))}, though ${d.clips_stale.visits_since} visit${d.clips_stale.visits_since === 1 ? ' has' : 's have'} happened since. They'll download automatically if Whisker lists them later.</div></div>` : ''}
-  </div>
-
+  </div>`, `
   <div class="tiles">
     ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
     ${tile('Litter level', pct(i.litter_level), titleCase(i.litter_state), i.litter_level, litterWarn)}
@@ -87,7 +86,14 @@ function render() {
         <div class="list">${d.recent.length ? d.recent.map(a => `<div><span class="t">${esc(when(a.ts))}</span><span>${esc(typeLabel(a.type))}${a.subtype && !/^robotCycleState/.test(a.subtype) ? ` <span class="muted">(${esc(a.subtype)})</span>` : ''}</span></div>`).join('') : '<div class="muted">Nothing recorded yet</div>'}</div>
       </div>
     </div>
-  </div>`;
+  </div>`, d.robot.camera);
+}
+
+// The live view card sits between #top and #rest so re-rendering never touches its <video>.
+function show(top, rest = '', camera = false) {
+  el('top').innerHTML = top;
+  el('rest').innerHTML = rest;
+  el('live').hidden = !camera;
 }
 
 const FW_NAMES = { ESP: 'Wi-Fi module', MCU: 'Main controller', CAM: 'Camera', EDGE: 'Edge processor', AI: 'AI model' };
@@ -136,11 +142,11 @@ function actionRow(a) {
 
 async function load() {
   if (!SERIAL) {
-    el('root').innerHTML = `<div class="card"><div class="empty"><div class="empty-icon">🤖</div>No robots yet. They appear after the first sync.</div></div>`;
+    show(`<div class="card"><div class="empty"><div class="empty-icon">🤖</div>No robots yet. They appear after the first sync.</div></div>`);
     return;
   }
   try { s.data = await api(`/api/robot/${encodeURIComponent(SERIAL)}`); }
-  catch (e) { el('root').innerHTML = `<div class="card"><div class="empty">Couldn't load robot (${esc(e.message)})</div></div>`; return; }
+  catch (e) { show(`<div class="card"><div class="empty">Couldn't load robot (${esc(e.message)})</div></div>`); return; }
   render();
   schedule();
   if (!s.autoRefreshed && (!s.data.info_at || Date.now() / 1000 - s.data.info_at > 60)) {

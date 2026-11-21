@@ -20,6 +20,7 @@ from flask import (Flask, Response, abort, g, jsonify, redirect, render_template
 from pylitterbot.camera import local_timezone_name
 
 import lr_db
+import lr_live
 
 app = Flask(__name__)
 CLIPS = Path(os.environ.get("CLIPS_PATH", "/clips"))
@@ -168,7 +169,8 @@ def api_robot(serial):
     for c in commands:
         latest.setdefault(c["command"], c)
     return jsonify(
-        robot={"serial": r["serial"], "name": r["name"], "model": r["model"], "timezone": r["timezone"]},
+        robot={"serial": r["serial"], "name": r["name"], "model": r["model"], "timezone": r["timezone"],
+               "camera": bool(r["camera_device_id"])},
         robots=[dict(x) for x in conn.execute("SELECT serial, name FROM robots ORDER BY name")],
         info=json.loads(r["info"]) if r["info"] else None, info_at=r["info_at"],
         clips_stale=json.loads(lr_db.get_state(conn, f"clips_stale:{serial}") or "null"),
@@ -197,6 +199,62 @@ def api_robot_command(serial):
     cid = lr_db.enqueue_command(conn, serial, command)
     conn.commit()
     return jsonify(command=_command_json(conn.execute("SELECT * FROM robot_commands WHERE id = ?", (cid,)).fetchone())), 202
+
+
+# ------------------------------------------------------------ live view
+
+
+def _live(coro):
+    """Run a live-view call, turning failures into a JSON error for the page."""
+    try:
+        return lr_live.run(coro)
+    except lr_live.LiveError as err:
+        abort(Response(json.dumps({"error": str(err)}), status=409, mimetype="application/json"))
+    except Exception:
+        logging.getLogger("lr_live").exception("Live view request failed")
+        abort(Response(json.dumps({"error": "Whisker didn't respond; try again"}), status=502,
+                       mimetype="application/json"))
+
+
+@app.route("/api/live/<serial>", methods=["POST"])
+def api_live_start(serial):
+    if not db().execute("SELECT 1 FROM robots WHERE serial = ? AND camera_device_id IS NOT NULL",
+                        (serial,)).fetchone():
+        abort(404)
+    return jsonify(_live(lr_live.start(serial)))
+
+
+@app.route("/api/live/<serial>/view", methods=["POST"])
+def api_live_view(serial):
+    view = (request.get_json(force=True, silent=True) or {}).get("view")
+    if view not in ("front", "globe"):
+        abort(400)
+    return jsonify(ok=_live(lr_live.set_view(serial, view)))
+
+
+@app.route("/api/live/session/<sid>/offer", methods=["POST"])
+def api_live_offer(sid):
+    sdp = (request.get_json(force=True, silent=True) or {}).get("sdp")
+    if not isinstance(sdp, str) or not sdp:
+        abort(400)
+    return jsonify(sdp=_live(lr_live.offer(sid, sdp)))
+
+
+@app.route("/api/live/session/<sid>/candidates", methods=["GET", "POST"])
+def api_live_candidates(sid):
+    if request.method == "POST":
+        candidate = request.get_json(force=True, silent=True)
+        if not isinstance(candidate, dict):
+            abort(400)
+        _live(lr_live.add_candidate(sid, candidate))
+        return jsonify(ok=True)
+    return jsonify(candidates=_live(lr_live.candidates(sid, request.args.get("after", 0, type=int))))
+
+
+@app.route("/api/live/session/<sid>/close", methods=["POST"])
+def api_live_close(sid):
+    _live(lr_live.close(sid))
+    return jsonify(ok=True)
 
 
 @app.route("/manifest.webmanifest")

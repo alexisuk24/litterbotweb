@@ -45,6 +45,12 @@ endpoint for them, so use the Whisker app. The firmware card shows each componen
 updates, recorded from when this version of the app first ran (changes are noticed at the
 next sync).
 
+**Live view** on a camera robot's page streams the camera over WebRTC, with Front/Globe
+switching and sound (muted until you unmute). Video goes straight from the camera to your
+browser; the web server only relays the connection setup through Whisker, logging in with
+the same `LR_USERNAME` / `LR_PASSWORD`. It stops after 10 minutes, or when you leave or hide
+the page.
+
 **↻ Re-download** (under the player on Events and Clips) fetches a fresh copy of a clip
 from Whisker if the local one looks wrong; the old file is only replaced once the new
 download succeeds. Clips that haven't downloaded yet show **Download now**. This only
@@ -118,7 +124,7 @@ docker buildx build --pull --platform linux/amd64 \
 | Events | `GET .../cameras/{deviceId}/events` | AI detections; useful for matching clips to cats |
 | Activity log | `GET https://ub.prod.iothings.site/robots/{serial}/activities?limit=&offset=` | `PET_VISIT` rows carry `petWeight` (lb × 100), `duration`, `wasteType`, `petIds`, `cameraEventIds` |
 | Pets | GraphQL `https://pet-profile.iothings.site/graphql/` | Profiles and `weightHistory` |
-| Live view | `GET https://watford.ienso-dev.com/api/device-manager/client/generate-session/{deviceId}` then WebRTC signaling over `wss://.../api/signaling` | Not needed for clips |
+| Live view | `GET https://watford.ienso-dev.com/api/device-manager/client/generate-session/{deviceId}` then WebRTC signaling over `wss://.../api/signaling` | The response carries TURN credentials; the browser is the WebRTC peer and the server relays the offer, answer and ICE candidates (pylitterbot's `CameraSignalingRelay`) |
 
 ## Unverified (check with `--dump` on first run)
 
