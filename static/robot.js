@@ -54,7 +54,11 @@ function render() {
     </div>
     ${faulty ? `<div class="faults">${i.faults.map(f => `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : ''}
     ${d.clips_stale ? `<div class="faults"><div>⚠ Whisker hasn't listed any new videos since ${esc(when(d.clips_stale.newest_clip))}, though ${d.clips_stale.visits_since} visit${d.clips_stale.visits_since === 1 ? ' has' : 's have'} happened since. They'll download automatically if Whisker lists them later.</div></div>` : ''}
-  </div>`, `
+  </div>
+  <div class="card panel">
+    <h2>Actions</h2>
+    ${ACTIONS.map(actionRow).join('')}
+  </div>
   <div class="tiles">
     ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
     ${tile('Litter level', pct(i.litter_level), titleCase(i.litter_state), i.litter_level, litterWarn)}
@@ -64,14 +68,7 @@ function render() {
     ${tile('Total cycles', i.total_cycles ?? '—', i.scoops_saved != null ? `${i.scoops_saved.toLocaleString()} scoops saved` : '')}
     ${tile('Wi-Fi', wq, wd)}
     ${tile('Last seen', ago(i.last_seen), when(i.last_seen))}
-  </div>
-
-  <div class="cols">
-    <div class="card panel">
-      <h2>Actions</h2>
-      ${ACTIONS.map(actionRow).join('')}
-    </div>
-    <div style="display:grid;gap:1rem">
+  </div>`, `
       <div class="card panel">
         <h2>Firmware</h2>
         <div class="fw">
@@ -84,16 +81,16 @@ function render() {
       <div class="card panel">
         <h2>Recent robot activity</h2>
         <div class="list">${d.recent.length ? d.recent.map(a => `<div><span class="t">${esc(when(a.ts))}</span><span>${esc(typeLabel(a.type))}${a.subtype && !/^robotCycleState/.test(a.subtype) ? ` <span class="muted">(${esc(a.subtype)})</span>` : ''}</span></div>`).join('') : '<div class="muted">Nothing recorded yet</div>'}</div>
-      </div>
-    </div>
-  </div>`, d.robot.camera);
+      </div>`, d.robot.camera);
 }
 
-// The live view card sits between #top and #rest so re-rendering never touches its <video>.
-function show(top, rest = '', camera = false) {
+// The live view card is static markup beside #side so re-rendering never touches its <video>.
+function show(top, side = '', camera = false) {
   el('top').innerHTML = top;
-  el('rest').innerHTML = rest;
+  el('side').innerHTML = side;
   el('live').hidden = !camera;
+  el('cols').hidden = !side && !camera;
+  el('cols').classList.toggle('solo', !camera);
 }
 
 const FW_NAMES = { ESP: 'Wi-Fi module', MCU: 'Main controller', CAM: 'Camera', EDGE: 'Edge processor', AI: 'AI model' };

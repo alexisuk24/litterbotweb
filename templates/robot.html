@@ -35,6 +35,7 @@
 .bar.warn i { background: var(--warn); }
 
 .cols { display: grid; grid-template-columns: 3fr 2fr; gap: 1rem; align-items: start; }
+.cols.solo { grid-template-columns: 1fr; }
 @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
 .panel h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
 .act { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; padding: .9rem 1.1rem; border-top: 1px solid var(--border); }
@@ -76,6 +77,7 @@
 <div class="page">
   <div class="wrap" id="root" data-serial="{{ serial }}">
     <div id="top" style="display:contents"><div class="card"><div class="empty">Loading…</div></div></div>
+    <div class="cols" id="cols" hidden>
     <div class="card panel" id="live" hidden>
       <h2>Live view</h2>
       <div class="live-video" id="liveVideo" hidden>
@@ -93,7 +95,8 @@
         <span class="msg" id="liveMsg" role="status"></span>
       </div>
     </div>
-    <div id="rest" style="display:contents"></div>
+    <div id="side" style="display:grid;gap:1rem"></div>
+    </div>
   </div>
 </div>
 <script src="{{ asset('common.js') }}"></script>
