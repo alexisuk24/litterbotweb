@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 
 HEADER = os.environ.get("LR_AUTH_HEADER", "").strip()
@@ -55,7 +57,8 @@ def _verify(token: str) -> dict:
     if _jwks is None:
         _jwks = jwt.PyJWKClient(f"https://{TEAM}/cdn-cgi/access/certs", cache_keys=True, lifespan=3600)
     key = _jwks.get_signing_key_from_jwt(token)
-    return jwt.decode(token, key.key, algorithms=["RS256"], audience=AUD, issuer=f"https://{TEAM}")
+    return jwt.decode(token, key.key, algorithms=["RS256"], audience=AUD, issuer=f"https://{TEAM}",
+                      options={"require": ["exp", "iss", "aud"]})  # as Cloudflare's own example does
 
 
 def verifying() -> bool:
@@ -86,6 +89,20 @@ def identify(headers) -> User:
     return User(email, "admin" if email in ADMINS else "viewer")
 
 
+# The last request that got admin rights only because it came straight to the app (not
+# through Cloudflare) while roles are on: Settings warns, since that means the port is open.
+_direct: dict | None = None
+_direct_lock = threading.Lock()
+
+
+def note_direct(addr: str | None) -> None:
+    global _direct
+    if addr in ("127.0.0.1", "::1"):  # the container itself, e.g. its health check
+        return
+    with _direct_lock:
+        _direct = {"at": time.time(), "addr": addr}
+
+
 def allowed(user: User, method: str, path: str) -> bool:
     if user.role == "admin":
         return True
@@ -97,4 +114,4 @@ def allowed(user: User, method: str, path: str) -> bool:
 def describe() -> dict:
     """The access setup, for the Settings page."""
     return {"header": HEADER or None, "verify": verifying(), "team": TEAM or None,
-            "admins": sorted(ADMINS)}
+            "admins": sorted(ADMINS), "direct": _direct if HEADER else None}

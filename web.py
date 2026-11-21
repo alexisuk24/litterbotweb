@@ -91,6 +91,8 @@ def _check_access():
         g.user = lr_auth.identify(request.headers)
     except lr_auth.Denied as d:
         return _refuse(d.status, d.message)
+    if lr_auth.HEADER and g.user.email is None:  # admin only because it bypassed Cloudflare
+        lr_auth.note_direct(request.remote_addr)
     if not lr_auth.allowed(g.user, request.method, request.path):
         return _refuse(403, "Your account can view this app but not change anything. Ask an admin.")
     return None

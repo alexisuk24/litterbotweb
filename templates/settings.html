@@ -351,6 +351,12 @@ function paintAccess(a) {
   st.textContent = a.you.email ? `You're signed in as ${a.you.email} (${a.you.role === 'admin' ? 'Admin' : 'Viewer'}).`
                                : 'You have no identity on this request (direct access), so you have admin access.';
   st.className = 'status';
+  if (a.direct) {
+    const when = new Date(a.direct.at * 1000).toLocaleString();
+    st.textContent += ` ⚠ The app was opened directly, without Cloudflare, from ${a.direct.addr || 'an unknown address'} at ${when},`
+      + ' which gives admin access. To allow only Cloudflare, remove the port mapping from compose.yml or firewall port 2287.';
+    st.className = 'status warn';
+  }
 }
 
 // ---- notifications
