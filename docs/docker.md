@@ -80,7 +80,7 @@ docker run -d --name lr-clips --restart unless-stopped -p 2287:2287 \
 | `latest` | The latest release. Use this one. |
 | `0.2.0`, `0.2` | A specific release, or the latest patch release of a minor version |
 | `develop` | The latest development build: newest changes, less tested |
-| `0.2.1-dev.14` | A specific development build |
+| `0.2.1-dev.14` | A specific development build, deleted once `0.2.1` is released |
 
 Images are built for `linux/amd64` and come with SBOM and provenance attestations.
 

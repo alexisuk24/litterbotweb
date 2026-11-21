@@ -101,3 +101,33 @@ jobs:
             git tag "$TAG"
             git push origin "$TAG"
           fi
+
+      # Removes the <version>-dev.N tags of this release and earlier ones; dev builds of a
+      # later version (develop already on the next minor during a hotfix) and the moving
+      # "develop" tag stay. The release itself is already published, so a failure here
+      # only leaves old dev tags behind.
+      - name: Delete the development builds this release replaces
+        if: github.ref_name == 'main'
+        continue-on-error: true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}  # needs Read, Write & Delete
+        run: |
+          token=$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' \
+            | curl -sSf -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login \
+            | jq -r .token)
+          tags=""
+          url="https://hub.docker.com/v2/repositories/$IMAGE/tags?page_size=100"
+          while [ -n "$url" ] && [ "$url" != null ]; do
+            page=$(curl -sSf -H "Authorization: Bearer $token" "$url")
+            tags+=$(jq -r '.results[].name' <<< "$page")$'\n'
+            url=$(jq -r .next <<< "$page")
+          done
+          for tag in $tags; do
+            [[ $tag =~ ^([0-9]+\.[0-9]+\.[0-9]+)-dev\.[0-9]+$ ]] || continue
+            [ "$(printf '%s\n%s\n' "${BASH_REMATCH[1]}" "$VERSION" | sort -V | tail -1)" = "$VERSION" ] || continue
+            curl -sSf -X DELETE -H "Authorization: Bearer $token" \
+              "https://hub.docker.com/v2/repositories/$IMAGE/tags/$tag/"
+            echo "Deleted $tag"
+          done

@@ -248,7 +248,8 @@ Releases: feature branches are merged into `develop` by PR, and each merge publi
 build of the next release (`0.3.0-dev.52`, plus a moving `develop` tag) to Docker Hub.
 To release, open a PR from `develop` to `main` and merge it with a merge commit (not
 squash, or the two branches' histories split). That publishes `0.3.0`, `0.3` and `latest`,
-and tags the commit `v0.3.0`. The version comes from `VERSION`, which holds only
+tags the commit `v0.3.0`, and deletes the `-dev.N` tags of `0.3.0` and earlier versions
+from Docker Hub (the `develop` tag stays). The version comes from `VERSION`, which holds only
 major.minor: raise it (in the release PR or earlier on `develop`) for a minor or major
 release, or leave it for a patch release (`0.3.1`, `0.3.2`, ...). Hotfixes go from a branch
 off `main` straight to `main`; merge `main` back into `develop` afterwards. The workflow

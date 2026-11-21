@@ -28,6 +28,7 @@ feature/fix branches ──PR (squash)──▶ develop ──release PR (merge 
 ```
 
 - **`develop`** is where all work lands. Every merge publishes a test build to Docker Hub.
+  These test builds are deleted when their release is published.
 - **`main`** only changes when the maintainer cuts a release. Each merge into it is a
   release: a version number, a git tag and the `latest` image.
 - Both branches are protected: changes go in through a PR with passing checks, and
