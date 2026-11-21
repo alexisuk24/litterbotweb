@@ -2,3 +2,6 @@ static/vendor/
 __pycache__/
 *.db
 *.db-*
+.env
+s3-check/
+.DS_Store

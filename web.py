@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
                    send_file, url_for)
 
+from pylitterbot.camera import local_timezone_name
+
 import lr_db
 
 app = Flask(__name__)
@@ -659,13 +661,18 @@ def api_settings():
             if body["unit"] not in ("kg", "lb"):
                 abort(400)
             lr_db.set_state(conn, "weight_unit", body["unit"])
+        if "clip_tz" in body:
+            if body["clip_tz"] not in lr_db.CLIP_TZ_CHOICES:
+                abort(400)
+            lr_db.set_state(conn, "clip_tz", body["clip_tz"])
         conn.commit()
     pending = conn.execute("SELECT COUNT(*) AS n FROM whisker_pushes WHERE status IN ('pending', 'sending')").fetchone()["n"]
     failed = conn.execute(
         "SELECT COUNT(*) AS n FROM whisker_pushes p WHERE status = 'error' AND id = "
         "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)").fetchone()["n"]
     return jsonify(writeback=lr_db.writeback_enabled(conn), unit=weight_unit(), pending=pending, failed=failed,
-                   retention=retention_info(),
+                   retention=retention_info(), clip_tz=lr_db.clip_list_tz(conn),
+                   server_tz=local_timezone_name(),
                    sync_interval=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
 
 

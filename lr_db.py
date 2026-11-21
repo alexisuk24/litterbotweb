@@ -388,6 +388,16 @@ def writeback_enabled(conn) -> bool:
     return get_state(conn, "writeback") != "0"  # on unless switched off in Settings
 
 
+CLIP_TZ_CHOICES = ("robot", "server", "utc")
+
+
+def clip_list_tz(conn) -> str:
+    """Which timezone clip listings are sent with: each robot's own (default),
+    the server's TZ, or UTC."""
+    value = get_state(conn, "clip_tz")
+    return value if value in CLIP_TZ_CHOICES else "robot"
+
+
 # Whisker rejects reassigning visits older than this
 WHISKER_EDIT_WINDOW_S = 7 * 86400
 

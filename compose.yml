@@ -10,6 +10,14 @@ services:
       LR_DOWNLOAD_INTERVAL: ${LR_DOWNLOAD_INTERVAL:-3600}
       PYBOT_UPDATE_INTERVAL: ${PYBOT_UPDATE_INTERVAL:-86400}
       LR_ACTIVITY_MAX_PAGES: ${LR_ACTIVITY_MAX_PAGES:-50}
+      LR_HWACCEL: ${LR_HWACCEL:-auto}
+    # Hardware video encoding (Intel/AMD VAAPI) for clips that switch cameras:
+    # uncomment both, with RENDER_GID set to the host's render group id
+    # (getent group render | cut -d: -f3). Without them, encoding runs on the CPU.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "${RENDER_GID:-109}"
     ports:
       - "2287:2287"
     volumes:

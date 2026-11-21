@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Download recorded Litter-Robot 5 Pro camera clips from the Whisker cloud.
 
-Uses pylitterbot (>= 2025.6.5) for login and the camera inventory API, then
-fetches each clip's HLS stream with its short-lived CloudFront signed cookies
-and remuxes it to MP4 with ffmpeg.
+Uses pylitterbot (>= 2025.9.0) for login and the camera inventory API, then
+downloads each clip's MP4 chunks from their presigned S3 URLs and joins them
+into one MP4 with ffmpeg (re-encoding clips whose chunks change resolution,
+with VAAPI when /dev/dri is mapped in).
 
 Each run also syncs metadata into a SQLite database (--db / DB_PATH): robots,
 pets and their weight history, the robot activity log (pet visits with weight,
@@ -34,19 +35,18 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import aiohttp
+from yarl import URL
 from pylitterbot import Account
-from pylitterbot.camera import VideoClip
+from pylitterbot.camera import VideoClip, VideoPlayback, local_timezone_name
 from pylitterbot.robot.litterrobot5 import LitterRobot5
 
 import lr_db
 
 LOG = logging.getLogger("lr_clips")
 ACTIVITY_PAGE = 100
-URI_ATTR = re.compile(r'URI="([^"]+)"')
 SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -70,7 +70,7 @@ def check_and_update_pylitterbot() -> None:
         LOG.warning("pylitterbot update check failed: %s", proc.stderr.strip()[-200:])
 
 
-# --------------------------------------------------------------------------- HLS
+# ----------------------------------------------------------------------- video
 
 
 async def fetch(http: aiohttp.ClientSession, url: str, cookie: str) -> bytes:
@@ -79,87 +79,126 @@ async def fetch(http: aiohttp.ClientSession, url: str, cookie: str) -> bytes:
         return await resp.read()
 
 
-def pick_variant(master: str, base: str) -> str | None:
-    """Return the highest-bandwidth variant URL from a master playlist."""
-    best, best_bw, lines = None, -1, master.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith("#EXT-X-STREAM-INF"):
-            bw = re.search(r"BANDWIDTH=(\d+)", line)
-            bw = int(bw.group(1)) if bw else 0
-            nxt = next((l for l in lines[i + 1 :] if l and not l.startswith("#")), None)
-            if nxt and bw > best_bw:
-                best, best_bw = urljoin(base, nxt), bw
-    return best
+class ClipNotReady(Exception):
+    """Whisker lists the clip but hasn't stored its video chunks yet."""
 
 
-async def download_hls(
-    http: aiohttp.ClientSession, playlist_url: str, cookie: str, dest: Path
-) -> None:
-    """Mirror an HLS playlist locally (segments, init map, keys), then remux to MP4.
+HWACCEL = os.environ.get("LR_HWACCEL", "auto").lower()  # auto | vaapi | off
+_vaapi_failed = False  # set once VAAPI has failed, so later clips go straight to software
 
-    Fetching everything ourselves guarantees the CloudFront cookie goes on every
-    request; ffmpeg then only ever reads local files.
-    """
-    text = (await fetch(http, playlist_url, cookie)).decode()
-    if "#EXT-X-STREAM-INF" in text:
-        variant = pick_variant(text, playlist_url)
-        if not variant:
-            raise RuntimeError("master playlist had no variants")
-        playlist_url = variant
-        text = (await fetch(http, playlist_url, cookie)).decode()
 
-    with tempfile.TemporaryDirectory(prefix="lrhls-") as tmp:
-        tmpdir = Path(tmp)
-        counter = 0
-        sem = asyncio.Semaphore(6)
-        jobs: list[asyncio.Task] = []
+def vaapi_device() -> str | None:
+    """The VAAPI render node to encode on, if /dev/dri is mapped in and allowed."""
+    if HWACCEL == "off" or _vaapi_failed:
+        return None
+    nodes = sorted(Path("/dev/dri").glob("renderD*"))
+    if not nodes:
+        if HWACCEL == "vaapi":
+            LOG.warning("LR_HWACCEL=vaapi but no /dev/dri/renderD* device is mapped in; encoding in software")
+        return None
+    return str(nodes[0])
 
-        def local_name(remote: str) -> str:
-            nonlocal counter
-            counter += 1
-            ext = Path(remote.split("?")[0]).suffix or ".bin"
-            name = f"part{counter:05d}{ext}"
 
-            async def grab() -> None:
-                async with sem:
-                    data = await fetch(http, urljoin(playlist_url, remote), cookie)
-                (tmpdir / name).write_bytes(data)
+def probe_chunk(path: Path) -> tuple[tuple[int, int], bool]:
+    """A chunk's video (width, height), and whether it has audio."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "json", str(path)],
+        capture_output=True, text=True)
+    streams = json.loads(out.stdout or "{}").get("streams", [])
+    video = next((st for st in streams if st.get("codec_type") == "video"), {})
+    return (video.get("width", 0), video.get("height", 0)), any(st.get("codec_type") == "audio" for st in streams)
 
-            jobs.append(asyncio.create_task(grab()))
-            return name
 
-        out_lines = []
-        for line in text.splitlines():
-            if line.startswith("#"):
-                line = URI_ATTR.sub(lambda m: f'URI="{local_name(m.group(1))}"', line)
-            elif line.strip():
-                line = local_name(line.strip())
-            out_lines.append(line)
+def reencode_cmd(chunks: list[Path], size: tuple[int, int], audio: bool, device: str | None, out: Path) -> list[str]:
+    """Join chunks of different resolutions into one H.264 MP4 at size."""
+    w, h = size
+    inputs, graph = [], []
+    for i, chunk in enumerate(chunks):
+        inputs += ["-i", str(chunk)]
+        graph.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                     f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}]")
+        if audio:
+            graph.append(f"[{i}:a]aresample=48000[a{i}]")
+    pairs = "".join(f"[v{i}]" + (f"[a{i}]" if audio else "") for i in range(len(chunks)))
+    graph.append(f"{pairs}concat=n={len(chunks)}:v=1:a={int(audio)}[cv]" + ("[ca]" if audio else ""))
+    if device:
+        graph.append("[cv]format=nv12,hwupload[v]")
+        enc = ["-c:v", "h264_vaapi", "-qp", "22"]
+        hw = ["-init_hw_device", f"vaapi=va:{device}", "-filter_hw_device", "va"]
+    else:
+        graph.append("[cv]format=yuv420p[v]")
+        enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]
+        hw = []
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *hw, *inputs,
+            "-filter_complex", ";".join(graph), "-map", "[v]", *(["-map", "[ca]", "-c:a", "aac", "-b:a", "128k"] if audio else []),
+            *enc, "-movflags", "+faststart", str(out)]
 
-        await asyncio.gather(*jobs)
-        local_m3u8 = tmpdir / "index.m3u8"
-        local_m3u8.write_text("\n".join(out_lines) + "\n")
 
-        partial = dest.with_name(f"{dest.stem}.{os.urandom(4).hex()}.part.mp4")
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-allowed_extensions", "ALL",
-            "-protocol_whitelist", "file,crypto",
-            "-i", str(local_m3u8),
-            "-c", "copy", "-movflags", "+faststart",
-            str(partial),
-        ]
-        proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            partial.unlink(missing_ok=True)
-            raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
-        partial.rename(dest)
+async def run_ffmpeg(cmd: list[str], partial: Path) -> None:
+    proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
+
+
+async def join_chunks(chunks: list[Path], dest: Path, clip_id: str) -> None:
+    """Join a clip's MP4 chunks into dest. Chunks of one resolution are joined
+    as-is; Whisker clips that switch cameras (front at 1080p, then globe at 720p)
+    are re-encoded at the largest size, since players freeze at a resolution
+    change. Writes to a temp file first, so a failure leaves any existing dest intact."""
+    global _vaapi_failed
+    partial = dest.with_name(f"{dest.stem}.{os.urandom(4).hex()}.part.mp4")
+    probes = await asyncio.gather(*(asyncio.to_thread(probe_chunk, c) for c in chunks))
+    sizes = list(dict.fromkeys(size for size, _ in probes))
+    if len(sizes) == 1:
+        listing = chunks[0].parent / "chunks.txt"
+        listing.write_text("".join(f"file '{c.name}'\n" for c in chunks))
+        await run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-i", str(listing),
+                          "-c", "copy", "-movflags", "+faststart", str(partial)], partial)
+    else:
+        size = max(sizes, key=lambda s: s[0] * s[1])
+        audio = all(has_audio for _, has_audio in probes)
+        if not audio:
+            LOG.warning("clip %s: some chunks have no audio; saving it without sound", clip_id)
+        change = " -> ".join(f"{w}x{h}" for w, h in sizes)
+        device = vaapi_device()
+        if device:
+            LOG.info("clip %s: resolution changes (%s); re-encoding at %dx%d with VAAPI", clip_id, change, *size)
+            try:
+                await run_ffmpeg(reencode_cmd(chunks, size, audio, device, partial), partial)
+            except RuntimeError as err:
+                _vaapi_failed = True
+                LOG.warning("VAAPI encoding failed, using software for the rest of this run: %s", err)
+                device = None
+        if not device:
+            LOG.info("clip %s: resolution changes (%s); re-encoding at %dx%d in software", clip_id, change, *size)
+            await run_ffmpeg(reencode_cmd(chunks, size, audio, None, partial), partial)
+    partial.rename(dest)
+
+
+async def download_clip(client, http: aiohttp.ClientSession, clip_id: str, dest: Path) -> VideoPlayback | None:
+    """Download a clip's MP4 chunks from their presigned S3 URLs and join them
+    into dest (see join_chunks). Returns the playback details (its CloudFront
+    cookies fetch the thumbnail), or None if Whisker has no such clip."""
+    playback = await client.get_video_playback(clip_id)
+    if playback is None:
+        return None
+    if not playback.chunks:
+        raise ClipNotReady(clip_id)
+    with tempfile.TemporaryDirectory(prefix="lrclip-") as tmp:
+        chunks = []
+        for i, chunk in enumerate(playback.chunks):
+            # presigned: no auth or cookies, and the query string must stay exactly as signed
+            async with http.get(URL(chunk.download_url, encoded=True)) as resp:
+                resp.raise_for_status()
+                path = Path(tmp) / f"chunk{i:03d}.mp4"
+                path.write_bytes(await resp.read())
+            chunks.append(path)
+        await join_chunks(chunks, dest, clip_id)
+    return playback
 
 
 # ------------------------------------------------------------------------ clips
-
-
-MAX_CLIP_PAGES = 50  # Whisker returns 10 clips per page
 
 
 def date_window(days: int, tz: ZoneInfo) -> list[str]:
@@ -169,47 +208,33 @@ def date_window(days: int, tz: ZoneInfo) -> list[str]:
     return [(today - timedelta(d)).isoformat() for d in range(-1, days + 1)]
 
 
-async def list_clips(robot: LitterRobot5, days: int, tz_name: str, raw_pages: dict | None = None) -> list:
-    """Every clip Whisker lists for the date window.
+def clip_list_tz_name(db, robot: LitterRobot5, fallback: str) -> str:
+    """The timezone to list clips in, per the Settings page choice."""
+    choice = lr_db.clip_list_tz(db)
+    if choice == "server":
+        return local_timezone_name()
+    if choice == "utc":
+        return "UTC"
+    return robot.timezone or fallback
 
-    Whisker returns a different set of clips for each timezone it is given:
-    without one it behaves as UTC and leaves out recent clips for accounts
-    elsewhere (pylitterbot PR #484), but the local-timezone list misses some
-    clips the UTC one has. So list both, paging like the app, and merge by id.
-    pylitterbot also turns a failed response into [], so fetch directly and
-    warn about those. raw_pages, if given, collects each response as-is."""
-    client = robot.get_camera_client()
+
+async def list_clips(robot: LitterRobot5, days: int, tz_name: str, raw_lists: dict | None = None) -> list:
+    """Every clip Whisker lists for the date window, listed in tz_name (dates
+    are read as days in it) and merged by id. raw_lists, if given, collects
+    each listing's clips as-is."""
     seen: dict[str, VideoClip] = {}
-    for tz in dict.fromkeys([tz_name, "UTC"]):
-        tz_param = {} if tz == "UTC" else {"timezone": tz}  # UTC: no timezone, as before
-        for day in [None, *date_window(days, ZoneInfo(tz))]:  # None: newest, no date filter
-            await _list_clip_pages(robot, client, day, tz_param, seen, raw_pages)
+    for day in [None, *date_window(days, ZoneInfo(tz_name))]:  # None: newest, no date filter
+        label = day or "latest"
+        try:
+            listed = await robot.get_camera_videos(date=day, timezone=tz_name)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            LOG.warning("%s: Whisker's clip list for %s failed: %s", robot.name, label, err)
+            continue
+        if raw_lists is not None:
+            raw_lists[label] = [c.raw for c in listed]
+        for clip in listed:
+            seen.setdefault(clip.id, clip)
     return sorted(seen.values(), key=lambda c: c.created_at or datetime.min.replace(tzinfo=timezone.utc))
-
-
-async def _list_clip_pages(robot: LitterRobot5, client, day: str | None, tz_param: dict,
-                           seen: dict[str, VideoClip], raw_pages: dict | None) -> None:
-    url = f"{client._inventory_base}/videos" + (f"/{day}" if day else "")
-    label = f"{day or 'latest'} {tz_param.get('timezone', 'UTC')}"
-    listed: set[str] = set()  # this listing's ids, to spot the page that repeats
-    for page in range(1, MAX_CLIP_PAGES + 1):
-        data = await client._get(url, params={"page": str(page), **tz_param})
-        if raw_pages is not None:
-            raw_pages[f"{label} p{page}"] = data
-        if not isinstance(data, list):
-            LOG.warning("%s: Whisker's clip list for %s (page %d) %s", robot.name, label, page,
-                        "request failed" if data is None else f"returned {type(data).__name__}, not a list")
-            return
-        added = 0
-        for item in data:
-            if isinstance(item, dict):
-                clip = VideoClip.from_response(item)
-                seen.setdefault(clip.id, clip)
-                if clip.id not in listed:
-                    listed.add(clip.id)
-                    added += 1
-        if not added:  # empty page, or one that repeats clips already seen
-            return
 
 
 CLIP_STALE_AFTER_S = 3 * 3600
@@ -238,9 +263,10 @@ async def process_robot(
 ) -> tuple[int, int]:
     tz = ZoneInfo(robot.timezone or args.tz)
     client = robot.get_camera_client()
-    raw_pages: dict = {}
-    clips = await list_clips(robot, args.days, robot.timezone or args.tz, raw_pages)
-    LOG.info("%s: %d clip(s) listed", robot.name, len(clips))
+    raw_lists: dict = {}
+    list_tz = clip_list_tz_name(args.db_conn, robot, args.tz)
+    clips = await list_clips(robot, args.days, list_tz, raw_lists)
+    LOG.info("%s: %d clip(s) listed (%s)", robot.name, len(clips), list_tz)
     if not args.dump:
         check_clip_list_freshness(args.db_conn, robot, clips)
 
@@ -249,7 +275,7 @@ async def process_robot(
         d.mkdir(parents=True, exist_ok=True)
         (d / "robot.json").write_text(json.dumps(robot.to_dict(), indent=2, default=str))
         (d / "clips.json").write_text(json.dumps([c.raw for c in clips], indent=2))
-        (d / "clips_by_date.json").write_text(json.dumps(raw_pages, indent=2))  # each listing response as-is
+        (d / "clips_by_date.json").write_text(json.dumps(raw_lists, indent=2))  # each listing as-is
         (d / "events.json").write_text(json.dumps(await client.get_events(limit=200), indent=2))
         (d / "camera_info.json").write_text(json.dumps(await client.get_camera_info(), indent=2))
         (d / "activities.json").write_text(json.dumps(await robot.get_activities(limit=200), indent=2))
@@ -283,16 +309,17 @@ async def process_robot(
         db.commit()
         folder.mkdir(parents=True, exist_ok=True)
 
-        playback = await client.get_video_playback(clip.id)  # fresh cookies per clip
-        url = (playback and playback.hls_url) or clip.raw.get("hlsUrl")
-        if not playback or not url:
-            LOG.warning("%s: no playback for clip %s", robot.name, clip.id)
-            failed += 1
-            continue
         try:
-            await download_hls(http, url, playback.cookie_header, mp4)
+            playback = await download_clip(client, http, clip.id, mp4)  # fresh S3 URLs and cookies per clip
+        except ClipNotReady:
+            LOG.info("%s: clip %s isn't ready on Whisker yet; will try again next sync", robot.name, clip.id)
+            continue
         except Exception as err:  # keep going; one bad clip shouldn't stop the run
             LOG.warning("%s: clip %s failed: %s", robot.name, clip.id, err)
+            failed += 1
+            continue
+        if playback is None:
+            LOG.warning("%s: no playback for clip %s", robot.name, clip.id)
             failed += 1
             continue
 
@@ -668,7 +695,7 @@ async def send_pushes(db, account: Account) -> None:
 
 
 async def redownload_clip(db, robot: LitterRobot5, args: argparse.Namespace, clip_id: str) -> str | None:
-    """Fetch a fresh copy of one clip from Whisker. download_hls writes to a temp
+    """Fetch a fresh copy of one clip from Whisker. download_clip writes to a temp
     file and only then replaces the old one, so a failure leaves the old copy intact.
     Returns an error message, or None on success."""
     row = db.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
@@ -682,13 +709,15 @@ async def redownload_clip(db, robot: LitterRobot5, args: argparse.Namespace, cli
     else:
         when = datetime.fromtimestamp(row["ts"], ZoneInfo(robot.timezone or args.tz))
         stem = f"{slug(robot.name)}_{when:%Y-%m-%d}_{when:%H-%M-%S}"
-    playback = await robot.get_camera_client().get_video_playback(clip_id)
-    if not playback or not playback.hls_url:
-        return "Whisker no longer has this clip (it may have expired from Whisker's history)"
     folder.mkdir(parents=True, exist_ok=True)
     mp4, thumb = folder / f"{stem}.mp4", folder / f"{stem}.jpg"
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as http:
-        await download_hls(http, playback.hls_url, playback.cookie_header, mp4)
+        try:
+            playback = await download_clip(robot.get_camera_client(), http, clip_id, mp4)
+        except ClipNotReady:
+            return "Whisker hasn't finished storing this clip yet; try again in a few minutes"
+        if playback is None:
+            return "Whisker no longer has this clip (it may have expired from Whisker's history)"
         (folder / f"{stem}.json").write_text(json.dumps(raw, indent=2))
         if raw.get("videoThumbnail") and not args.no_thumbs:
             try:

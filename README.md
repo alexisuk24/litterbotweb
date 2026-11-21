@@ -62,13 +62,13 @@ pages). The first time retention is enabled it waits `LR_RETENTION_GRACE_HOURS` 
 before deleting anything, so you can mark existing clips first. A banner shows when it
 starts. Deleted clips are never re-downloaded; their visit history stays.
 
-Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.6.5+, which
+Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.9.0+, which
 already reverse-engineered the LR5 Pro camera APIs.
 
 ## Run it
 
 ```bash
-pip install "pylitterbot>=2025.6.5"     # ffmpeg must be on PATH
+pip install "pylitterbot>=2025.9.0"     # ffmpeg must be on PATH
 export LR_USERNAME=you@example.com LR_PASSWORD=...
 python lr_clips.py --dump ./api-dump    # first: look at what the API returns
 python lr_clips.py --out ./clips        # then: download the last 7 days
@@ -98,6 +98,7 @@ docker buildx build --pull --platform linux/amd64 \
 |---|---|---|
 | `LR_DOWNLOAD_INTERVAL` | 3600 | Seconds between sync runs (clips and metadata) |
 | `LR_ACTIVITY_MAX_PAGES` | 50 | Pages of 100 activities to backfill on the first run |
+| `LR_HWACCEL` | auto | Encoder for clips that switch cameras mid-clip (front at 1080p, then globe at 720p), which are re-encoded at 1080p so they don't freeze: `auto` uses VAAPI when `/dev/dri` is mapped in (see `compose.yml`) and the CPU otherwise, `vaapi` warns if no device is found, `off` always uses the CPU |
 | `MATCH_BEFORE_S` / `MATCH_AFTER_S` | 600 / 180 | How far before/after a visit a clip still counts as that visit's clip |
 | `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything) |
 | `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
@@ -111,8 +112,9 @@ docker buildx build --pull --platform linux/amd64 \
 | Login | AWS Cognito via the Whisker app client | pylitterbot handles token refresh |
 | Robots | `GET https://ub.prod.iothings.site/robots` | Pro units have `type: LR5_PRO` and `cameraMetadata.deviceId` |
 | List clips | `GET https://rrntg65uwf.execute-api.us-east-1.amazonaws.com/prod/v1/cameras/{deviceId}/videos[/{YYYY-MM-DD}]` | Bearer token **and** `x-api-key` (the app's static key, bundled in pylitterbot) |
-| Clip detail | `GET .../prod/v1/camera-videos/{clipId}` | Response sets `CloudFront-Policy`, `CloudFront-Signature`, `CloudFront-Key-Pair-Id` cookies; body has `hlsUrl` |
-| Video | `GET {hlsUrl}` and each segment | Needs those cookies on every request, otherwise 403. Cookies are short-lived, so fetch them right before downloading |
+| Clip detail | `GET .../prod/v1/camera-videos/{clipId}` | Body has `chunks[].downloadUrl` (presigned S3) and `hlsUrl`; the response also sets `CloudFront-Policy`, `CloudFront-Signature`, `CloudFront-Key-Pair-Id` cookies |
+| Video | `GET {chunks[].downloadUrl}` for each chunk | Separate MP4 files in playback order, joined with ffmpeg's concat demuxer (no re-encode). Presigned and short-lived: no auth or cookies, query string exactly as signed. A clip with no chunks yet is retried next sync |
+| Thumbnail | `GET {videoThumbnail}` | Needs the CloudFront cookies from the clip detail, otherwise 403 |
 | Events | `GET .../cameras/{deviceId}/events` | AI detections; useful for matching clips to cats |
 | Activity log | `GET https://ub.prod.iothings.site/robots/{serial}/activities?limit=&offset=` | `PET_VISIT` rows carry `petWeight` (lb × 100), `duration`, `wasteType`, `petIds`, `cameraEventIds` |
 | Pets | GraphQL `https://pet-profile.iothings.site/graphql/` | Profiles and `weightHistory` |

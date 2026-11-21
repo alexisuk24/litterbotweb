@@ -59,6 +59,18 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
         </div>
         <label class="switch"><input type="checkbox" id="wbToggle" role="switch" aria-labelledby="wbLabel" disabled><span class="track"></span></label>
       </div>
+      <div class="row">
+        <div>
+          <div class="label" id="tzLabel">Clip list timezone</div>
+          <div class="desc">The timezone sent when asking Whisker for clips; dates are read as days in it.
+            Whisker leaves recent clips out of the list when this doesn't match the robot, so leave it on
+            Robot unless clips go missing. Takes effect at the next sync.</div>
+          <div class="status" id="tzStatus"></div>
+        </div>
+        <div class="seg" id="tzSeg" role="radiogroup" aria-labelledby="tzLabel">
+          <button data-tz="robot" role="radio">Robot</button><button data-tz="server" role="radio">Server</button><button data-tz="utc" role="radio">UTC</button>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -119,7 +131,12 @@ function paint(st) {
     b.classList.toggle('on', b.dataset.unit === st.unit);
     b.setAttribute('aria-checked', b.dataset.unit === st.unit);
   });
-  el('interval').textContent = st.sync_interval ? every(st.sync_interval) : 'Once at startup';
+  el('tzSeg').querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.tz === st.clip_tz);
+    b.setAttribute('aria-checked', b.dataset.tz === st.clip_tz);
+  });
+  el('tzSeg').querySelector('[data-tz="server"]').title = st.server_tz;
+  el('interval').textContent =st.sync_interval ? every(st.sync_interval) : 'Once at startup';
   const r = st.retention || {};
   el('retention').textContent = r.days ? `${r.days} days` : 'Keep everything';
 }
@@ -148,6 +165,19 @@ el('unitSeg').addEventListener('click', async e => {
   } catch {
     el('unitStatus').textContent = "Couldn't save. Try again.";
     el('unitStatus').className = 'status warn';
+  }
+});
+
+el('tzSeg').addEventListener('click', async e => {
+  const clip_tz = e.target.dataset.tz;
+  if (!clip_tz || e.target.classList.contains('on')) return;
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ clip_tz }) }));
+    el('tzStatus').textContent = '';
+  } catch {
+    el('tzStatus').textContent = "Couldn't save. Try again.";
+    el('tzStatus').className = 'status warn';
   }
 });
 
