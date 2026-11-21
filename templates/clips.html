@@ -110,6 +110,15 @@ const pad = n => String(n).padStart(2,'0');
 const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const today = () => { const d=new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
 
+// What retention does to a clip next (same as retentionNote in common.js, which this page doesn't load).
+function retentionNote(c) {
+  const tag = c.small ? 'Small copy' : '';
+  if (c.keep) return 'Kept forever';
+  if (!c.expires) return tag;
+  const step = c.next === 'small' ? `Becomes a small copy ${expiryText(c.expires)}`
+                                  : `Video removed ${expiryText(c.expires)} (picture kept)`;
+  return tag ? `${tag} · ${step}` : step;
+}
 function expiryText(ts) {
   const days = Math.ceil((ts - Date.now() / 1000) / 86400);
   const date = new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
