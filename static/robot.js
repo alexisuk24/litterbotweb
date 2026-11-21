@@ -84,18 +84,21 @@ function render() {
           <div class="note">Firmware updates have to be installed from the Whisker app. Whisker's API for the Litter-Robot 5 can't start an update or report whether one is available.</div>
         </div>
       </div>
+      `, d.robot.camera, `
       <div class="card panel">
         <h2>Recent robot activity</h2>
         <div class="list">${d.recent.length ? d.recent.map(a => `<div><span class="t">${esc(when(a.ts))}</span><span>${esc(typeLabel(a.type))}${a.subtype && !/^robotCycleState/.test(a.subtype) ? ` <span class="muted">(${esc(a.subtype)})</span>` : ''}</span></div>`).join('') : '<div class="muted">Nothing recorded yet</div>'}</div>
-      </div>`, d.robot.camera);
+      </div>`);
 }
 
-// The live view card is static markup beside #side so re-rendering never touches its <video>.
-function show(top, side = '', camera = false) {
+// The live view card is static markup (with #below under it, beside #side) so re-rendering
+// never touches its <video>.
+function show(top, side = '', camera = false, below = '') {
   el('top').innerHTML = top;
   el('side').innerHTML = side;
+  el('below').innerHTML = below;
   el('live').hidden = !camera;
-  el('cols').hidden = !side && !camera;
+  el('cols').hidden = !side && !camera && !below;
   el('cols').classList.toggle('solo', !camera);
 }
 

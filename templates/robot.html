@@ -39,6 +39,7 @@
 
 .cols { display: grid; grid-template-columns: 3fr 2fr; gap: 1rem; align-items: start; }
 .cols.solo { grid-template-columns: 1fr; }
+.col-main { display: grid; gap: 1rem; align-content: start; min-width: 0; }
 @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
 .panel h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
 .acts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; padding: .5rem 1.1rem 1rem; }
@@ -96,6 +97,7 @@
   <div class="wrap" id="root" data-serial="{{ serial }}">
     <div id="top" style="display:contents"><div class="card"><div class="empty">Loading…</div></div></div>
     <div class="cols" id="cols" hidden>
+    <div class="col-main">
     <div class="card panel" id="live" hidden>
       <h2>Live view</h2>
       <div class="live-video" id="liveVideo" hidden>
@@ -112,6 +114,8 @@
         <span class="spacer"></span>
         <span class="msg" id="liveMsg" role="status"></span>
       </div>
+    </div>
+    <div id="below" style="display:contents"></div>
     </div>
     <div id="side" style="display:grid;gap:1rem"></div>
     </div>
