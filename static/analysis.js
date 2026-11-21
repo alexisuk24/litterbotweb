@@ -58,7 +58,6 @@ function render() {
       ${tile('Clean cycles', d.totals.cycles, `${(d.totals.cycles / d.days).toFixed(1)} per day`)}
       ${tile('No cat assigned', d.totals.unassigned, d.totals.unassigned ? '<a href="/events?pet=none" style="color:inherit">review →</a>' : 'all identified')}
       ${tile('Your corrections', d.totals.corrected, `${corrPct}% of visits`)}
-      ${tile('Offline events', d.totals.offline, d.totals.interrupted ? `${d.totals.interrupted} interrupted cycles` : 'no interrupted cycles')}
     </div>
 
     <div class="span-12 cats">${pets.map(catCard).join('')}</div>
