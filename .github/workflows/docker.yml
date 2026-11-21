@@ -1,0 +1,103 @@
+name: Docker
+
+# develop: publishes a build of the next release (<version>-dev.<run>, plus "develop").
+# main: publishes a release (<version>, <major.minor>, "latest") and tags it in git.
+# VERSION holds major.minor; the patch number comes from the existing v* tags, so a
+# release PR that doesn't change VERSION is a patch release.
+on:
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: alexisuk24/lr_video_downloader
+
+jobs:
+  test:
+    uses: ./.github/workflows/tests.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to push the release tag
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # all tags, to find the next patch number
+
+      - name: Work out the version
+        id: version
+        run: |
+          base=$(tr -d '[:space:]' < VERSION)
+          if ! [[ $base =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=VERSION::VERSION must be major.minor (e.g. 0.3), got '$base'"
+            exit 1
+          fi
+          latest=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
+          if [ -n "$latest" ]; then
+            released=${latest#v}; released=${released%.*}
+            if [ "$(printf '%s\n%s\n' "$released" "$base" | sort -V | head -1)" != "$released" ]; then
+              echo "::error file=VERSION::VERSION $base is behind the latest release $latest"
+              exit 1
+            fi
+          fi
+
+          # A re-run of a release reuses its tag instead of bumping again.
+          version=$(git tag --points-at HEAD --list "v$base.*" --sort=-v:refname | head -1)
+          version=${version#v}
+          if [ -z "$version" ]; then
+            last=$(git tag --list "v$base.*" --sort=-v:refname | head -1)
+            if [ -n "$last" ]; then
+              version="$base.$(( ${last##*.} + 1 ))"
+            else
+              version="$base.0"
+            fi
+          fi
+
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE:$version,$IMAGE:$base,$IMAGE:latest" >> "$GITHUB_OUTPUT"
+          else
+            version="$version-dev.$GITHUB_RUN_NUMBER"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE:$version,$IMAGE:develop" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Building $version"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          pull: true
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: APP_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.version.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag the release
+        if: github.ref_name == 'main'
+        env:
+          TAG: v${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "$(git tag --list "$TAG")" ]; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
