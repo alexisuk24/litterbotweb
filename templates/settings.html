@@ -162,6 +162,19 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
     </div>
 
     <div class="card">
+      <h2>Access</h2>
+      <div class="row">
+        <div>
+          <div class="label">Who can change things</div>
+          <div class="desc" id="accessDesc">—</div>
+          <div class="status" id="accessStatus"></div>
+        </div>
+      </div>
+      <div class="foot">Set with <code>LR_AUTH_HEADER</code>, <code>LR_AUTH_TEAM_DOMAIN</code>, <code>LR_AUTH_AUD</code> and
+        <code>LR_ADMINS</code> in <code>compose.yml</code>, so they can't be changed from here.</div>
+    </div>
+
+    <div class="card">
       <h2>Display</h2>
       <div class="row stack">
         <div>
@@ -227,6 +240,7 @@ function paint(st) {
   }
   iv.disabled = false;
   paintNotify(st.notify);
+  paintAccess(st.access);
   const r = st.retention || {};
   const rs = el('retention');
   const label = d => d ? `${d} days` : 'Forever';
@@ -319,6 +333,25 @@ el('tzSeg').addEventListener('click', async e => {
     el('tzStatus').className = 'status warn';
   }
 });
+
+// ---- access (read-only: set in compose.yml)
+function paintAccess(a) {
+  const d = el('accessDesc'), st = el('accessStatus');
+  if (!a.header) {
+    d.textContent = 'Everyone who can open this app can change everything. Set LR_AUTH_HEADER (e.g. to ' +
+      'Cf-Access-Authenticated-User-Email) to give Cloudflare Access users Admin or Viewer roles.';
+    st.textContent = '';
+    return;
+  }
+  d.innerHTML = `Users are identified by the <code>${esc(a.header)}</code> header` +
+    (a.verify ? `, checked against Cloudflare Access's signed token for <code>${esc(a.team)}</code>.`
+              : '. Without LR_AUTH_TEAM_DOMAIN and LR_AUTH_AUD it\'s trusted as sent, so only use this if the app is reachable through Cloudflare alone.') +
+    ` Admins: ${a.admins.length ? a.admins.map(esc).join(', ') : 'none listed'}; everyone else can view but not change anything.` +
+    ' Requests without the header from outside Cloudflare (your LAN) have admin access.';
+  st.textContent = a.you.email ? `You're signed in as ${a.you.email} (${a.you.role === 'admin' ? 'Admin' : 'Viewer'}).`
+                               : 'You have no identity on this request (direct access), so you have admin access.';
+  st.className = 'status';
+}
 
 // ---- notifications
 function paintNotify(n) {

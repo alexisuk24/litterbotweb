@@ -13,6 +13,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 
+// Viewers (lr_auth) can look but not change anything; the server enforces it, this just hides the controls
+const CAN_EDIT = !window.LR_USER || window.LR_USER.role === 'admin';
 const UNIT = window.LR_UNIT === 'lb' ? 'lb' : 'kg';
 function fmtW(lb, digits) {
   if (lb == null) return '—';

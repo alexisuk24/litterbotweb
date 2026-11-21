@@ -113,6 +113,34 @@ count, since restarting wouldn't help; `docker inspect` shows its last error. Do
 reports the status; to restart an unhealthy container automatically, use something like
 [autoheal](https://github.com/willfarrell/docker-autoheal).
 
+### Access control (Cloudflare Access)
+
+Off by default: anyone who can open the app can change everything. To give people roles,
+put the app behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/)
+and set these in `compose.yml`:
+
+| Variable | Example | |
+| --- | --- | --- |
+| `LR_AUTH_HEADER` | `Cf-Access-Authenticated-User-Email` | Header that names the user; turns roles on |
+| `LR_AUTH_TEAM_DOMAIN` | `yourteam.cloudflareaccess.com` | With `LR_AUTH_AUD`, verify Cloudflare's signed `Cf-Access-Jwt-Assertion` |
+| `LR_AUTH_AUD` | `4714c1358e65fe4b…` | The Access application's *Application Audience (AUD) Tag* |
+| `LR_ADMINS` | `you@example.com,partner@example.com` | Admins; everyone else is a Viewer |
+
+- **Admins** can do everything.
+- **Viewers** can see every page except Settings, start a sync and download vet reports.
+  They can't correct cats, use robot actions or the live view, keep or re-download clips,
+  or see settings and logs. The server refuses these, not just the page.
+- **Verifying the token** (set both `LR_AUTH_TEAM_DOMAIN` and `LR_AUTH_AUD`) makes the email
+  header impossible to forge: each request's signed token is checked against your team's
+  public keys and must name the same email. Without them the header is trusted as sent, so
+  only skip it if port 2287 can't be reached except through Cloudflare.
+- **Requests without an identity** have admin access when they don't come through Cloudflare
+  (direct access on your LAN), and are refused when they do (a hostname or path without
+  an Access policy). So anyone who can reach port 2287 directly is an admin; firewall it if
+  that isn't what you want. `/api/health` needs no identity, for Docker and Uptime Kuma.
+- These are environment variables on purpose: nothing in the web UI can change them. The
+  Settings page shows the current setup.
+
 ### Monitoring with Uptime Kuma
 
 Add an **HTTP(s)** monitor pointed at the same `/api/health` endpoint. It answers 200 when

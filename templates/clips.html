@@ -246,7 +246,10 @@ function playVideo(idx) {
   }
 }
 
+const CAN_EDIT = !window.LR_USER || window.LR_USER.role === 'admin';  // viewers can't keep or re-download
+
 function keepButton(v) {
+  if (!CAN_EDIT) return '';
   if (!v.id) return '<button class="share-btn" disabled title="This clip has no metadata yet; it can be kept after the next sync">📌 Keep forever</button>';
   return `<button class="share-btn${v.keep ? ' on' : ''}" id="keepBtn" onclick="toggleKeep()">📌 ${v.keep ? 'Kept forever' : 'Keep forever'}</button>`;
 }
@@ -254,7 +257,7 @@ const keepNote = v => v.keep ? '' : retentionNote(v);
 
 const dlBusy = v => v.download && (v.download.status === 'pending' || v.download.status === 'sending');
 function dlButton(v) {
-  if (!v.id) return '';
+  if (!v.id || !CAN_EDIT) return '';
   const busy = dlBusy(v);
   return `<button class="share-btn" id="dlBtn" onclick="requestDownload()" ${busy ? 'disabled' : ''} title="Fetch a fresh copy of this clip from Whisker">${busy ? 'Downloading…' : '↻ Re-download'}</button>`;
 }

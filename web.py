@@ -17,9 +17,11 @@ from zoneinfo import ZoneInfo
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
                    send_file, url_for)
+from markupsafe import escape
 
 from pylitterbot.camera import local_timezone_name
 
+import lr_auth
 import lr_db
 import lr_iq
 import lr_live
@@ -77,7 +79,31 @@ def fmt_weight(lb: float, unit: str, signed: bool = False) -> str:
 
 @app.context_processor
 def _inject_unit():
-    return {"weight_unit": weight_unit()}
+    return {"weight_unit": weight_unit(), "user": g.get("user") or lr_auth.User(None, "admin")}
+
+
+@app.before_request
+def _check_access():
+    """Who's asking (lr_auth) and whether they may: Viewers can look but not change anything."""
+    if request.path == "/api/health":  # Docker and uptime monitors carry no identity
+        return None
+    try:
+        g.user = lr_auth.identify(request.headers)
+    except lr_auth.Denied as d:
+        return _refuse(d.status, d.message)
+    if not lr_auth.allowed(g.user, request.method, request.path):
+        return _refuse(403, "Your account can view this app but not change anything. Ask an admin.")
+    return None
+
+
+def _refuse(status: int, message: str):
+    if request.path.startswith("/api/") or request.method != "GET":
+        return jsonify(error=message), status
+    return Response(f"<!doctype html><meta name=viewport content='width=device-width'>"
+                    f"<body style='font-family:system-ui;background:#0f1117;color:#e2e8f0;padding:2rem'>"
+                    f"<h1 style='font-size:1.2rem'>Litter Robot</h1><p>{escape(message)}</p>"
+                    f"<p><a href='/robots' style='color:#b3a8ff'>Back to the app</a></p>",
+                    status=status, mimetype="text/html")
 
 
 @app.after_request
@@ -890,7 +916,7 @@ def api_settings():
                    server_tz=local_timezone_name(), notify=_notify_settings(conn),
                    sync_interval=lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600"))),
                    sync_intervals=lr_db.SYNC_INTERVALS, retention_choices=lr_db.RETENTION_CHOICES,
-                   small_choices=lr_db.SMALL_CHOICES)
+                   small_choices=lr_db.SMALL_CHOICES, access={**lr_auth.describe(), "you": g.user.json()})
 
 
 def _harsher(new, old) -> bool:

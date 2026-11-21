@@ -54,16 +54,16 @@ function render() {
     <div class="head">
       <div><h1>${esc(d.robot.name)}</h1><div class="model">${esc(i.model || d.robot.model || '')}${i.setup_date ? ` · set up ${new Date(i.setup_date * 1000).toLocaleDateString()}` : ''}</div></div>
       <span class="state ${stateCls}" role="status"><span class="dot"></span>${esc(stateText)}${i.sleeping ? ' · sleeping' : ''}</span>
-      <div class="right">Status as of ${ago(d.info_at)}<br>${refreshing ? 'Updating…' : '<a id="refreshNow">Update now</a>'}</div>
+      <div class="right">Status as of ${ago(d.info_at)}${CAN_EDIT ? `<br>${refreshing ? 'Updating…' : '<a id="refreshNow">Update now</a>'}` : ''}</div>
     </div>
     ${faulty ? `<div class="faults">${i.faults.map(f => `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : ''}
     ${d.clips_stale ? `<div class="faults"><div>⚠ Whisker hasn't listed any new videos since ${esc(when(d.clips_stale.newest_clip))}, though ${d.clips_stale.visits_since} visit${d.clips_stale.visits_since === 1 ? ' has' : 's have'} happened since. They'll download automatically if Whisker lists them later.</div></div>` : ''}
   </div>
-  <div class="card panel">
+  ${CAN_EDIT ? `<div class="card panel">
     <h2>Actions</h2>
     <div class="acts">${ACTIONS.map(actionButton).join('')}</div>
     ${ACTIONS.map(actionError).join('')}
-  </div>
+  </div>` : ''}
   <div class="tiles">
     ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
     ${tile('Litter level', pct(i.litter_level), titleCase(i.litter_state), i.litter_level, litterWarn)}
@@ -97,9 +97,9 @@ function show(top, side = '', camera = false, below = '') {
   el('top').innerHTML = top;
   el('side').innerHTML = side;
   el('below').innerHTML = below;
-  el('live').hidden = !camera;
-  el('cols').hidden = !side && !camera && !below;
-  el('cols').classList.toggle('solo', !camera);
+  el('live').hidden = !camera || !CAN_EDIT;
+  el('cols').hidden = !side && !(camera && CAN_EDIT) && !below;
+  el('cols').classList.toggle('solo', !camera || !CAN_EDIT);
 }
 
 // Robot IQ: when the drawer will be full and the hopper need refilling
@@ -199,7 +199,7 @@ async function load() {
   catch (e) { show(`<div class="card"><div class="empty">Couldn't load robot (${esc(e.message)})</div></div>`); return; }
   render();
   schedule();
-  if (!s.autoRefreshed && (!s.data.info_at || Date.now() / 1000 - s.data.info_at > 60)) {
+  if (CAN_EDIT && !s.autoRefreshed && (!s.data.info_at || Date.now() / 1000 - s.data.info_at > 60)) {
     s.autoRefreshed = true;
     send('refresh');
   }

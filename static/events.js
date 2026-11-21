@@ -247,6 +247,7 @@ function keepBar(c) {
   const busy = dlBusy(c);
   const label = c.video ? '↻ Re-download' : '⬇ Download now';
   const dl = `<button class="btn" id="dlBtn" ${busy ? 'disabled' : ''} title="Fetch a fresh copy of this clip from Whisker">${busy ? 'Downloading…' : label}</button>`;
+  if (!CAN_EDIT) return `<div class="keepbar"><span class="expiry">${esc(c.video ? retentionNote(c) : '')}</span></div>`;
   const keep = c.video
     ? `<button class="btn keep-btn${c.keep ? ' on' : ''}" id="keepBtn" data-id="${esc(c.id)}">📌 ${c.keep ? 'Kept' : 'Keep forever'}</button>` : '';
   const when = c.video ? retentionNote(c) : '';
@@ -381,14 +382,15 @@ function pickHtml(v) {
   return `<div class="section">
     <h3><span>Who was this?</span><span class="saved" id="saved">Saved</span></h3>
     ${callout}
-    ${v.ignored === 'light' ? '' : `<div class="pick" id="pick">${buttons}</div>`}
+    ${v.ignored === 'light' || !CAN_EDIT ? '' : `<div class="pick" id="pick">${buttons}</div>`}
+    ${CAN_EDIT || v.ignored ? '' : `<div class="muted" style="font-size:.85rem;margin-bottom:.5rem">${v.pet ? catChip(v.pet) : 'No cat assigned'}</div>`}
     <div class="actions">
-      ${(v.corrected || v.note) && v.ignored !== 'light' ? `<button class="btn" id="revertBtn">Revert to what the robot recorded <kbd>u</kbd></button>` : ''}
+      ${(v.corrected || v.note) && v.ignored !== 'light' && CAN_EDIT ? `<button class="btn" id="revertBtn">Revert to what the robot recorded <kbd>u</kbd></button>` : ''}
       <span class="muted" style="font-size:.78rem">${recorded}</span>
     </div>
     ${camLine}
     ${pushStatus(v)}
-    <div style="margin-top:.75rem"><textarea class="note" id="note" placeholder="Note (optional), e.g. 'both cats in at once'">${esc(v.note)}</textarea></div>
+    <div style="margin-top:.75rem"><textarea class="note" id="note" ${CAN_EDIT ? '' : 'readonly'} placeholder="${CAN_EDIT ? "Note (optional), e.g. 'both cats in at once'" : 'No note'}">${esc(v.note)}</textarea></div>
     <div class="hint">${tooOld
       ? 'This visit is more than 7 days old, so Whisker won\'t accept changes to it. Corrections are saved in this app only.'
       : wb ? 'Cat changes are also sent to the Whisker app; notes stay here.'
@@ -472,11 +474,11 @@ async function save(body, method = 'POST') {
 
 async function assign(petId) {
   const v = s.detail?.event;
-  if (!v || v.type !== 'PET_VISIT' || v.ignored === 'light') return;  // too light to be a cat
+  if (!v || v.type !== 'PET_VISIT' || v.ignored === 'light' || !CAN_EDIT) return;  // too light to be a cat, or a viewer
   await save({ pet_id: petId });
   if (s.f.filter === 'review') step(1);
 }
-const revert = () => s.detail?.event.type === 'PET_VISIT' && s.detail.event.ignored !== 'light' && save(null, 'DELETE');
+const revert = () => CAN_EDIT && s.detail?.event.type === 'PET_VISIT' && s.detail.event.ignored !== 'light' && save(null, 'DELETE');
 
 function step(d) {
   if (!s.events.length) return;
