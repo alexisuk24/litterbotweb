@@ -103,7 +103,7 @@ def asset(path: str) -> str:
 def index():
     if request.args.get("robot"):  # old share links pointed at the clips page on /
         return redirect(url_for("clips_page", **request.args))
-    return redirect(url_for("events_page"))
+    return redirect(url_for("robots_page"))
 
 
 @app.route("/clips")
@@ -263,7 +263,7 @@ def manifest():
     icon = lambda f, size, purpose="any": {"src": asset(f"icons/{f}"), "sizes": size, "type": "image/png",
                                            "purpose": purpose}
     resp = jsonify({
-        "name": "Litter Robot", "short_name": "Litter Robot", "id": "/", "start_url": "/events", "scope": "/",
+        "name": "Litter Robot", "short_name": "Litter Robot", "id": "/", "start_url": "/robots", "scope": "/",
         "display": "standalone", "background_color": "#0f1117", "theme_color": "#1a1d27",
         "icons": [icon("icon-192.png", "192x192"), icon("icon-512.png", "512x512"),
                   icon("icon-maskable-512.png", "512x512", "maskable")],
