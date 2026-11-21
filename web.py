@@ -117,9 +117,14 @@ def events_page():
     return render_template("events.html", page="events")
 
 
+@app.route("/cats")
+def cats_page():
+    return render_template("analysis.html", page="cats")
+
+
 @app.route("/analysis")
-def analysis_page():
-    return render_template("analysis.html", page="analysis")
+def analysis_page():  # the Cats page's old address
+    return redirect(url_for("cats_page", **request.args))
 
 
 @app.route("/settings")
@@ -1088,7 +1093,7 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
 
 
 def _cat_insights(p, k, b, kpis, visits, n_days, now, unit) -> list[str]:
-    """Warnings about one cat; the Analysis page shows them behind the ⚠ on its card."""
+    """Warnings about one cat; the Cats page shows them behind the ⚠ on its card."""
     out = []
     name = p["name"]
     if k["last_visit"] is None:

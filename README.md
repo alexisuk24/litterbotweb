@@ -25,7 +25,7 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   whether Whisker accepted each one. Whisker only accepts changes to visits from the
   last 7 days, so older corrections are kept locally and not sent. Notes always stay local.
 - **Clips**: the calendar browser for downloaded clips.
-- **Analysis**: insights (visit-frequency changes, weight changes of 5% or more,
+- **Cats** (formerly Analysis): insights (visit-frequency changes, weight changes of 5% or more,
   cats that haven't visited, offline events), per-cat cards, visits per day, weight
   trend, time-of-day and weekday×hour patterns, clean cycles, litter/drawer levels,
   and a table of the robot's most common cat mix-ups based on your corrections.
@@ -39,7 +39,7 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   and stool, anything unusual (long visits, bursts of visits, long gaps, stretches without
   stool, weight outside the usual range), a day-by-day table and your notes on visits.
 
-Analysis uses your corrections.
+The Cats page uses your corrections.
 
 **Settings** also shows the app logs: the sync collector's log (downloads, activity
 sync, Whisker updates) and the web server's warnings and errors, with a
