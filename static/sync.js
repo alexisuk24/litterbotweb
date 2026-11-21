@@ -52,7 +52,8 @@
       document.querySelector('.topnav').after(note);
     }
     const when = new Date(r.starts_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-    note.querySelector('span').textContent = `From ${when}, clips older than ${r.days} days are deleted. Tap 📌 Keep forever on any you want to keep.`;
+    const what = r.small === null ? 'lose their video (a picture is kept)' : 'are shrunk to a small copy';
+    note.querySelector('span').textContent = `From ${when}, clips older than ${r.days} days ${what}. Tap 📌 Keep forever on any you want to keep at full quality.`;
   }
 
   function schedule() {

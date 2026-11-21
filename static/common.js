@@ -51,6 +51,16 @@ function fmtOffset(s) {
   s = Math.abs(Math.round(s));
   return s >= 60 ? `${sign}${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ''}` : `${sign}${s}s`;
 }
+// What retention does to a clip next, from the API's keep fields.
+function retentionNote(c) {
+  const tag = c.small ? 'Small copy' : '';
+  if (c.keep) return 'Kept forever';
+  if (!c.expires) return tag;
+  const step = c.next === 'small' ? `Becomes a small copy ${expiryText(c.expires)}`
+                                  : `Video removed ${expiryText(c.expires)} (picture kept)`;
+  return tag ? `${tag} · ${step}` : step;
+}
+
 function expiryText(ts) {
   const days = Math.ceil((ts - Date.now() / 1000) / 86400);
   const date = new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });

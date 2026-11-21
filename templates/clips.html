@@ -117,7 +117,12 @@ function expiryText(ts) {
 }
 function clipStatus(v) {
   if (v.keep) return '📌 kept';
-  if (v.expires) { const d = Math.ceil((v.expires - Date.now() / 1000) / 86400); return d <= 0 ? 'deletes soon' : `${d}d left`; }
+  if (v.expires) {
+    const d = Math.ceil((v.expires - Date.now() / 1000) / 86400);
+    if (v.next === 'small') return d <= 0 ? 'shrinks soon' : `full res ${d}d`;
+    return d <= 0 ? 'video goes soon' : `${d}d left`;
+  }
+  if (v.small) return 'small copy';
   return '';
 }
 
@@ -236,7 +241,7 @@ function keepButton(v) {
   if (!v.id) return '<button class="share-btn" disabled title="This clip has no metadata yet; it can be kept after the next sync">📌 Keep forever</button>';
   return `<button class="share-btn${v.keep ? ' on' : ''}" id="keepBtn" onclick="toggleKeep()">📌 ${v.keep ? 'Kept forever' : 'Keep forever'}</button>`;
 }
-const keepNote = v => v.keep ? '' : v.expires ? `Auto-deletes ${expiryText(v.expires)}` : '';
+const keepNote = v => v.keep ? '' : retentionNote(v);
 
 const dlBusy = v => v.download && (v.download.status === 'pending' || v.download.status === 'sending');
 function dlButton(v) {

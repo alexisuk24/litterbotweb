@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS clips (
     thumb_file     TEXT,
     raw            TEXT,
     keep           INTEGER NOT NULL DEFAULT 0,
-    deleted_at     REAL
+    deleted_at     REAL,
+    quality        TEXT  -- NULL: as downloaded; 'small': re-encoded by retention
 );
 CREATE INDEX IF NOT EXISTS clips_ts ON clips (ts);
 CREATE TABLE IF NOT EXISTS visit_overrides (
@@ -207,6 +208,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE clips ADD COLUMN keep INTEGER NOT NULL DEFAULT 0")
     if "deleted_at" not in cols:
         conn.execute("ALTER TABLE clips ADD COLUMN deleted_at REAL")
+    if "quality" not in cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN quality TEXT")
     # "ignore this visit" was removed; un-ignore anything still flagged so it counts again
     conn.execute("UPDATE visit_overrides SET ignored = 0 WHERE ignored != 0")
     conn.execute("DELETE FROM visit_overrides WHERE pet_id IS NULL AND COALESCE(note, '') = ''")
@@ -330,6 +333,52 @@ def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
 def get_state(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM sync_state WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
+
+
+RETENTION_CHOICES = (0, 14, 30, 60, 90, 180, 365)  # days at full quality; 0 keeps them forever
+SMALL_CHOICES = ("none", 30, 60, 90, 180, 365, "forever")  # age up to which a small copy is kept
+
+
+def retention_days(conn: sqlite3.Connection) -> int:
+    """Days clips are kept at full quality: the Settings page's choice, else LR_RETENTION_DAYS,
+    never shorter than the download window (the collector records both at startup)."""
+    chosen, default = get_state(conn, "retention_setting"), get_state(conn, "retention_default")
+    days = int(chosen) if chosen and chosen.isdigit() else int(default or 0)
+    minimum = int(get_state(conn, "retention_min_days") or 0)
+    return max(days, minimum) if days else 0
+
+
+def retention_tiers(conn: sqlite3.Connection) -> tuple[int, int | None]:
+    """(full, small): days at full quality (0 = forever), and the age up to which a small
+    re-encoded copy is kept (None = no small copy, 0 = forever). After both, only the
+    clip's picture stays."""
+    full = retention_days(conn)
+    small = get_state(conn, "retention_small") or "none"
+    if not full or small == "none":
+        return full, None
+    if small == "forever":
+        return full, 0
+    return full, int(small) if small.isdigit() and int(small) > full else None
+
+
+def drop_clip_video(conn, clips_root: Path, row, log=None) -> bool:
+    """Delete a clip's video (and JSON sidecar) but keep its picture."""
+    root = clips_root.resolve()
+    folder = (root / row["robot_folder"]).resolve()
+    if not folder.is_relative_to(root):
+        return False
+    stem = Path(row["video_file"]).stem
+    try:
+        for ext in (".mp4", ".json"):
+            (folder / f"{stem}{ext}").unlink(missing_ok=True)
+    except OSError as err:
+        if log:
+            log.warning("retention: could not delete %s: %s", row["video_file"], err)
+        return False
+    thumb = folder / f"{stem}.jpg"
+    conn.execute("UPDATE clips SET video_file = NULL, thumb_file = ?, deleted_at = ? WHERE id = ?",
+                 (thumb.name if thumb.exists() else None, time.time(), row["id"]))
+    return True
 
 
 SYNC_INTERVALS = (900, 1800, 3600, 7200, 14400, 21600, 43200, 86400)  # choices on the Settings page
@@ -593,34 +642,6 @@ def add_snapshot(conn, *, robot_serial, litter_level, waste_drawer_level, scale_
 def is_clip_deleted(conn, clip_id) -> bool:
     row = conn.execute("SELECT deleted_at FROM clips WHERE id = ?", (str(clip_id),)).fetchone()
     return bool(row and row["deleted_at"])
-
-
-def apply_retention(conn, clips_root: Path, days: int, log=None) -> int:
-    """Delete clip files (mp4 + jpg + json) older than `days` unless marked keep."""
-    cutoff = time.time() - days * 86400
-    root = clips_root.resolve()
-    rows = conn.execute(
-        "SELECT id, robot_folder, video_file FROM clips WHERE keep = 0 AND deleted_at IS NULL "
-        "AND video_file IS NOT NULL AND ts < ?", (cutoff,)
-    ).fetchall()
-    deleted = 0
-    for r in rows:
-        stem = Path(r["video_file"]).stem
-        folder = (root / r["robot_folder"]).resolve()
-        if not folder.is_relative_to(root):
-            continue
-        try:
-            for ext in (".mp4", ".jpg", ".json"):
-                (folder / f"{stem}{ext}").unlink(missing_ok=True)
-        except OSError as err:
-            if log:
-                log.warning("retention: could not delete %s: %s", r["video_file"], err)
-            continue
-        conn.execute("UPDATE clips SET video_file = NULL, thumb_file = NULL, deleted_at = ? WHERE id = ?",
-                     (time.time(), r["id"]))
-        deleted += 1
-    conn.commit()
-    return deleted
 
 
 def index_clip_files(conn, clips_root: Path) -> int:

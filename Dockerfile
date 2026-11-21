@@ -2,7 +2,8 @@
 
 # ---- minimal ffmpeg: only what's needed to join a clip's MP4 chunks (H.264 +
 # AAC) into one MP4, as-is or, when the chunks change resolution, re-encoded
-# with x264 or VAAPI (/dev/dri).
+# with x264 or VAAPI (/dev/dri); to shrink old clips (scale + x264); and to save
+# a still JPEG (mjpeg + image2) for clips without a thumbnail.
 FROM debian:trixie-slim AS ffmpeg
 ARG FFMPEG_VERSION=9.0.2
 RUN apt-get update \
@@ -20,10 +21,10 @@ RUN mkdir /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-comp
         --enable-gpl --enable-libx264 --enable-vaapi --enable-libdrm \
         --enable-protocol=file,pipe \
         --enable-demuxer=concat,mov,aac,h264 \
-        --enable-muxer=mp4,mov \
+        --enable-muxer=mp4,mov,image2 \
         --enable-parser=h264,aac \
         --enable-decoder=h264,aac \
-        --enable-encoder=libx264,h264_vaapi,aac \
+        --enable-encoder=libx264,h264_vaapi,aac,mjpeg \
         --enable-filter=concat,scale,pad,setsar,format,hwupload,aresample,null,anull \
         --enable-bsf=aac_adtstoasc,h264_mp4toannexb,extract_extradata \
     && make -j"$(nproc)" \

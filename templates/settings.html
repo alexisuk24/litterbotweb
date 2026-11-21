@@ -140,6 +140,28 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
     </div>
 
     <div class="card">
+      <h2>Clips</h2>
+      <div class="row stack">
+        <div>
+          <div class="label" id="retentionLabel">Full quality for</div>
+          <div class="desc">Clips stay exactly as downloaded for this long. Clips marked 📌 Keep forever always do.</div>
+          <div class="status" id="retentionStatus"></div>
+        </div>
+        <select id="retention" class="pick" aria-labelledby="retentionLabel" disabled></select>
+      </div>
+      <div class="row stack">
+        <div>
+          <div class="label" id="smallLabel">Then a small copy until</div>
+          <div class="desc">After that, the clip is re-encoded at 360p, about 5% of the size. Once a clip is past
+            this age (or right away, with no small copy) its video is removed and only a picture of the event is
+            kept; the visit's history stays. Making either step sooner waits 24 hours before changing anything,
+            so you can mark clips to keep first.</div>
+        </div>
+        <select id="small" class="pick" aria-labelledby="smallLabel" disabled></select>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Display</h2>
       <div class="row stack">
         <div>
@@ -153,11 +175,6 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
       </div>
     </div>
 
-    <div class="card">
-      <h2>Set in compose.yml</h2>
-      <div class="row"><div><div class="label">Clip retention</div><div class="desc">Clips older than this are deleted unless marked Keep forever (<code>LR_RETENTION_DAYS</code>, 0 = keep all).</div></div><div class="value" id="retention">—</div></div>
-      <div class="foot">Change this in <code>compose.yml</code>, then run <code>docker compose up -d</code>.</div>
-    </div>
 
     <div class="card">
       <h2>Logs</h2>
@@ -211,7 +228,22 @@ function paint(st) {
   iv.disabled = false;
   paintNotify(st.notify);
   const r = st.retention || {};
-  el('retention').textContent = r.days ? `${r.days} days` : 'Keep everything';
+  const rs = el('retention');
+  const label = d => d ? `${d} days` : 'Forever';
+  const choices = st.retention_choices.filter(d => !d || d >= (r.minimum || 0));
+  if (!choices.includes(r.days)) choices.push(r.days);  // LR_RETENTION_DAYS set to something else
+  rs.innerHTML = choices.sort((a, b) => (a || 1e9) - (b || 1e9)).map(d => `<option value="${d}">${label(d)}</option>`).join('');
+  rs.value = String(r.days);
+  rs.disabled = false;
+  const sm = el('small');
+  const smallLabel = c => c === 'none' ? 'No small copy' : c === 'forever' ? 'Forever' : `${c} days old`;
+  sm.innerHTML = st.small_choices.filter(c => typeof c !== 'number' || c > r.days)
+    .map(c => `<option value="${c}">${smallLabel(c)}</option>`).join('');
+  sm.value = sm.querySelector(`option[value="${r.small_setting}"]`) ? r.small_setting : 'none';
+  sm.disabled = !r.days;  // with full quality forever there's nothing to shrink
+  const starts = r.days && r.starts_at && r.starts_at * 1000 > Date.now()
+    ? `Deleting starts ${new Date(r.starts_at * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : '';
+  if (!el('retentionStatus').classList.contains('warn')) el('retentionStatus').textContent = starts;
 }
 
 el('wbToggle').addEventListener('change', async e => {
@@ -225,6 +257,29 @@ el('wbToggle').addEventListener('change', async e => {
     e.target.disabled = false;
     el('wbStatus').textContent = "Couldn't save. Try again.";
     el('wbStatus').className = 'status warn';
+  }
+});
+
+el('retention').addEventListener('change', async e => {
+  el('retentionStatus').className = 'status';
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ retention_days: Number(e.target.value) }) }));
+  } catch {
+    el('retentionStatus').textContent = "Couldn't save. Try again.";
+    el('retentionStatus').className = 'status warn';
+  }
+});
+
+el('small').addEventListener('change', async e => {
+  const v = e.target.value;
+  el('retentionStatus').className = 'status';
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ retention_small: /^\d+$/.test(v) ? Number(v) : v }) }));
+  } catch {
+    el('retentionStatus').textContent = "Couldn't save. Try again.";
+    el('retentionStatus').className = 'status warn';
   }
 });
 

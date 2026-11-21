@@ -308,10 +308,15 @@ def _fstate(key):
 
 
 def retention_info():
-    days = int(_fstate("retention_days"))
-    enabled = _fstate("retention_enabled_at")
-    grace = float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24"))
-    return {"days": days, "starts_at": enabled + grace * 3600 if days and enabled else None}
+    if "retention" not in g:  # asked once per clip on the clip lists
+        days, small = lr_db.retention_tiers(db())
+        enabled = _fstate("retention_enabled_at")
+        grace = float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24"))
+        g.retention = {"days": days, "small": small,
+                       "small_setting": lr_db.get_state(db(), "retention_small") or "none",
+                       "starts_at": enabled + grace * 3600 if days and enabled else None,
+                       "minimum": int(_fstate("retention_min_days"))}
+    return g.retention
 
 
 def sync_status():
@@ -497,11 +502,19 @@ def clip_json(c, event_ts=None, event_duration=None, camera_ids=(), downloads=No
 
 
 def keep_fields(c):
-    days = retention_info()["days"]
-    return {
-        "keep": bool(c["keep"]), "deleted": bool(c["deleted_at"]),
-        "expires": c["ts"] + days * 86400 if days and not c["keep"] and not c["deleted_at"] else None,
-    }
+    """Keep flag, quality, and what retention does to the clip next (`next`: 'small' when it
+    becomes a small copy, 'picture' when its video goes) and when (`expires`)."""
+    r = retention_info()
+    days, small = r["days"], r["small"]
+    expires = nxt = None
+    if days and not c["keep"] and not c["deleted_at"]:
+        if c["quality"] is None:
+            expires = c["ts"] + days * 86400
+            nxt = "small" if small is not None and (small == 0 or c["ts"] + small * 86400 > expires) else "picture"
+        elif small:
+            expires, nxt = c["ts"] + small * 86400, "picture"
+    return {"keep": bool(c["keep"]), "deleted": bool(c["deleted_at"]), "small": c["quality"] == "small",
+            "expires": expires, "next": nxt}
 
 
 @app.route("/api/clips/<clip_id>/download", methods=["POST"])
@@ -742,6 +755,21 @@ def api_settings():
             if body["unit"] not in ("kg", "lb"):
                 abort(400)
             lr_db.set_state(conn, "weight_unit", body["unit"])
+        if "retention_days" in body or "retention_small" in body:
+            before = lr_db.retention_tiers(conn)
+            if "retention_days" in body:
+                days = body["retention_days"]
+                if days not in lr_db.RETENTION_CHOICES or 0 < days < int(_fstate("retention_min_days")):
+                    abort(400)
+                lr_db.set_state(conn, "retention_setting", str(days))
+            if "retention_small" in body:
+                if body["retention_small"] not in lr_db.SMALL_CHOICES:
+                    abort(400)
+                lr_db.set_state(conn, "retention_small", str(body["retention_small"]))
+            if _harsher(lr_db.retention_tiers(conn), before):
+                # clips will be shrunk or lose their video sooner: restart the grace period
+                # (and its banner) so the ones about to change can be marked Keep forever first
+                lr_db.set_state(conn, "retention_enabled_at", str(time.time()))
         if "sync_interval" in body:
             if body["sync_interval"] not in lr_db.SYNC_INTERVALS:
                 abort(400)
@@ -768,7 +796,16 @@ def api_settings():
                    retention=retention_info(), clip_tz=lr_db.clip_list_tz(conn),
                    server_tz=local_timezone_name(), notify=_notify_settings(conn),
                    sync_interval=lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600"))),
-                   sync_intervals=lr_db.SYNC_INTERVALS)
+                   sync_intervals=lr_db.SYNC_INTERVALS, retention_choices=lr_db.RETENTION_CHOICES,
+                   small_choices=lr_db.SMALL_CHOICES)
+
+
+def _harsher(new, old) -> bool:
+    """Whether retention tiers `new` shrink clips or drop their video sooner than `old`."""
+    inf = float("inf")
+    full = lambda t: t[0] or inf
+    video = lambda t: inf if not t[0] else (t[0] if t[1] is None else (t[1] or inf))
+    return full(new) < full(old) or video(new) < video(old)
 
 
 def _notify_settings(conn) -> dict:

@@ -243,7 +243,7 @@ function keepBar(c) {
   const dl = `<button class="btn" id="dlBtn" ${busy ? 'disabled' : ''} title="Fetch a fresh copy of this clip from Whisker">${busy ? 'Downloading…' : label}</button>`;
   const keep = c.video
     ? `<button class="btn keep-btn${c.keep ? ' on' : ''}" id="keepBtn" data-id="${esc(c.id)}">📌 ${c.keep ? 'Kept' : 'Keep forever'}</button>` : '';
-  const when = c.video ? (c.keep ? 'Kept forever' : c.expires ? `Auto-deletes ${expiryText(c.expires)}` : '') : '';
+  const when = c.video ? retentionNote(c) : '';
   return `<div class="keepbar">${keep}${dl}<span class="expiry">${esc(when)}</span>${downloadStatus(c)}</div>`;
 }
 
@@ -251,6 +251,8 @@ function renderPlayer() {
   const c = s.detail.clips[s.clipIdx];
   let body;
   if (!c) body = `<div class="novideo"><div class="empty-icon">📹</div>No camera clip recorded near this event</div>`;
+  else if (c.deleted && !c.video && c.thumb) body = `<figure class="still"><img src="${esc(c.thumb)}" alt="Picture from this clip">
+    <figcaption>The video was removed by the retention schedule; this picture was kept.</figcaption></figure>`;
   else if (c.deleted && !c.video) body = `<div class="novideo"><div class="empty-icon">🗑</div>This clip was deleted by the retention schedule</div>`;
   else if (!c.video) body = `<div class="novideo"><div class="empty-icon">⏳</div>This clip hasn't been downloaded yet<br><span style="font-size:.75rem">The downloader picks it up on its next run, or use Download now.</span></div>`;
   else body = `<video controls autoplay muted playsinline preload="metadata" src="${esc(c.video)}"></video>`;

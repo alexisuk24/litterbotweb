@@ -89,11 +89,16 @@ as one notification. A burst of visits in 24 hours is sent at high priority.
 the next scheduled one. It's disabled while a sync is running and for 5 seconds after
 one finishes.
 
-**Retention**: clips older than `LR_RETENTION_DAYS` (14) are deleted after each sync,
-except clips marked **📌 Keep forever** (button under the player on the Events and Clips
-pages). The first time retention is enabled it waits `LR_RETENTION_GRACE_HOURS` (24)
-before deleting anything, so you can mark existing clips first. A banner shows when it
-starts. Deleted clips are never re-downloaded; their visit history stays.
+**Retention** (Settings > Clips) works in three steps. Clips stay **full quality** as
+downloaded for a number of days (14 by default, from `LR_RETENTION_DAYS`). After that
+they can be kept as a **small copy**, re-encoded at 360p (about 5% of the size), up to an
+age you choose. Past that (or straight away, with no small copy) the **video is removed**
+and only a picture of the event is kept: Whisker's thumbnail, or a frame saved from the
+clip when there isn't one. Clips marked **📌 Keep forever** (button under the player on the
+Events and Clips pages) are never shrunk or removed. Making either step sooner waits
+`LR_RETENTION_GRACE_HOURS` (24) before changing anything, with a banner, so you can mark
+clips first. Shrinking is limited to 10 minutes per sync; a backlog carries over. Clips
+whose video was removed are never re-downloaded; their visit history stays.
 
 Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.9.0+, which
 already reverse-engineered the LR5 Pro camera APIs.
@@ -138,7 +143,7 @@ For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DR
 | `LR_ACTIVITY_MAX_PAGES` | 50 | Pages of 100 activities to backfill on the first run |
 | `LR_HWACCEL` | auto | Encoder for clips that switch cameras mid-clip (front at 1080p, then globe at 720p), which are re-encoded at 1080p so they don't freeze: `auto` uses VAAPI when `/dev/dri` is mapped in (see `compose.yml`) and the CPU otherwise, `vaapi` warns if no device is found, `off` always uses the CPU |
 | `MATCH_BEFORE_S` / `MATCH_AFTER_S` | 600 / 180 | How far before/after a visit a clip still counts as that visit's clip |
-| `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything) |
+| `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything), until a choice is made under Settings > Clips |
 | `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
 | `LR_WEB` | 1 | Serve the web UI on port 2287 from the collector's process (`0` = collector only; run `python web.py` separately) |
 | `DB_PATH` | /data/litterrobot.db | Database location |
