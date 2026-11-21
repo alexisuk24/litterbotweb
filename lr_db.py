@@ -30,7 +30,7 @@ def photo_dir(db_path: Path | str | None = None) -> Path:
 
 # The collector and the web UI each write their own file.
 LOG_DIR = Path(os.environ.get("LOG_DIR", DB_PATH.parent / "logs"))
-LOG_FILES = {"sync": "sync.log", "web": "web.log"}
+LOG_FILES = {"sync": "sync.log", "web": "web.log", "access": "access.log"}
 LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 
 

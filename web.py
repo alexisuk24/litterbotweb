@@ -90,11 +90,17 @@ def _check_access():
     try:
         g.user = lr_auth.identify(request.headers)
     except lr_auth.Denied as d:
+        lr_auth.log_refusal(None, d.status, d.message, request.method, request.path,
+                            request.headers, request.remote_addr)
         return _refuse(d.status, d.message)
     if lr_auth.HEADER and g.user.email is None:  # admin only because it bypassed Cloudflare
         lr_auth.note_direct(request.remote_addr)
+    lr_auth.log_access(g.user, request.headers, request.remote_addr)
     if not lr_auth.allowed(g.user, request.method, request.path):
-        return _refuse(403, "Your account can view this app but not change anything. Ask an admin.")
+        message = "Your account can view this app but not change anything. Ask an admin."
+        lr_auth.log_refusal(g.user, 403, "Viewers can't do this", request.method, request.path,
+                            request.headers, request.remote_addr)
+        return _refuse(403, message)
     return None
 
 
@@ -257,7 +263,7 @@ def api_live_start(serial):
     if not db().execute("SELECT 1 FROM robots WHERE serial = ? AND camera_device_id IS NOT NULL",
                         (serial,)).fetchone():
         abort(404)
-    return jsonify(_live(lr_live.start(serial)))
+    return jsonify(_live(lr_live.start(serial, lr_auth.who(g.user, request.headers, request.remote_addr))))
 
 
 @app.route("/api/live/<serial>/view", methods=["POST"])
@@ -289,7 +295,7 @@ def api_live_candidates(sid):
 
 @app.route("/api/live/session/<sid>/close", methods=["POST"])
 def api_live_close(sid):
-    _live(lr_live.close(sid))
+    _live(lr_live.close(sid, lr_live.END_REASONS.get(request.args.get("reason"), "closed")))
     return jsonify(ok=True)
 
 
@@ -1669,7 +1675,15 @@ def serve_video(robot, filename):
 
 
 # Loggers whose records go to web.log rather than the collector's sync.log.
-LOGGERS = ("werkzeug", app.logger.name, lr_live.LOG.name)
+LOGGERS = ("werkzeug", app.logger.name, lr_live.LOG.name, lr_auth.LOG.name)
+
+
+def _not_health_check(record: logging.LogRecord) -> bool:
+    """Leave Docker's and uptime monitors' health checks out of the console's request lines."""
+    return "/api/health" not in record.getMessage()
+
+
+logging.getLogger("werkzeug").addFilter(_not_health_check)
 
 
 def serve() -> None:
@@ -1678,7 +1692,11 @@ def serve() -> None:
         handler = lr_db.log_file_handler("web")
         handler.setLevel(logging.WARNING)
         for name in LOGGERS:
-            logging.getLogger(name).addHandler(handler)
+            if name != lr_auth.LOG.name:
+                logging.getLogger(name).addHandler(handler)
+        # sessions and refusals have their own file (Settings > Logs > Access)
+        lr_auth.LOG.setLevel(logging.INFO)
+        lr_auth.LOG.addHandler(lr_db.log_file_handler("access"))
     except OSError as err:
         print(f"Not writing a web log file: {err}", flush=True)
     app.run(host="0.0.0.0", port=2287, debug=False, threaded=True)

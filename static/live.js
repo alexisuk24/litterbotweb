@@ -60,7 +60,7 @@
         el('liveBadge').hidden = state !== 'connected';
         if (state === 'connected') { msg(''); logRoute(pc); }
         else if (state === 'disconnected') msg('Connection interrupted, waiting…');
-        else if (state === 'failed') stop("Couldn't keep a connection to the camera. Start again to retry.", true);
+        else if (state === 'failed') stop("Couldn't keep a connection to the camera. Start again to retry.", true, 'failed');
       };
       pollCandidates(s.id);
       await pc.setLocalDescription(await pc.createOffer());
@@ -70,9 +70,9 @@
       await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
       msg('Connecting…');
       clearTimeout(live.cap);
-      live.cap = setTimeout(() => stop('Stopped after 10 minutes. Start again to keep watching.'), MAX_MS);
+      live.cap = setTimeout(() => stop('Stopped after 10 minutes. Start again to keep watching.', false, 'limit'), MAX_MS);
     } catch (e) {
-      stop(e.message || "Couldn't start live view", true);
+      stop(e.message || "Couldn't start live view", true, 'error');
     } finally {
       el('liveStart').disabled = false;
     }
@@ -102,7 +102,8 @@
     live.poll = setTimeout(() => pollCandidates(id), 1000);
   }
 
-  function stop(text = '', err = false) {
+  // reason: why it stopped, for the server's access log (see lr_live.END_REASONS)
+  function stop(text = '', err = false, reason = 'stopped') {
     const id = live.id;
     clearTimeout(live.poll);
     clearTimeout(live.cap);
@@ -110,7 +111,7 @@
     Object.assign(live, { id: null, pc: null, view: null });
     el('liveEl').srcObject = null;
     el('liveBadge').hidden = true;
-    if (id) navigator.sendBeacon(`/api/live/session/${id}/close`);
+    if (id) navigator.sendBeacon(`/api/live/session/${id}/close?reason=${reason}`);
     msg(text, err);
     paint();
   }
@@ -130,7 +131,7 @@
     try { await post(`/api/live/${encodeURIComponent(SERIAL)}/view`, { view }); }
     catch { live.view = before; paint(); msg("Couldn't switch cameras", true); }
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && live.id) stop('Paused while the page was hidden.'); });
-  window.addEventListener('pagehide', () => { if (live.id) stop(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && live.id) stop('Paused while the page was hidden.', false, 'hidden'); });
+  window.addEventListener('pagehide', () => { if (live.id) stop('', false, 'left'); });
   paint();
 })();

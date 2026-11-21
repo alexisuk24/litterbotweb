@@ -14,6 +14,7 @@ or path without an Access policy never gets admin rights.
 Everything is configured through environment variables, so the web UI can't loosen it."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -32,10 +33,16 @@ VIEWER_WRITES = {("POST", "/api/sync")}
 ADMIN_READS = re.compile(r"^/(settings$|api/settings$|api/logs/|api/live/)")
 
 
+LOG = logging.getLogger("lr_access")  # access.log: sessions and refusals
+SESSION_GAP_S = 30 * 60   # without a Cloudflare session, a new one starts after this long idle
+REFUSAL_REPEAT_S = 10 * 60
+
+
 @dataclass
 class User:
     email: str | None  # None: no identity (auth off, or direct LAN access)
     role: str          # "admin" | "viewer"
+    signed_in: int | None = None  # Cloudflare Access sign-in time (the token's iat), when verified
 
     def json(self) -> dict:
         return {"email": self.email, "role": self.role}
@@ -86,6 +93,7 @@ def identify(headers) -> User:
             raise Denied(401, f"Cloudflare Access token rejected: {err}") from None
         if (claims.get("email") or "").lower() != email:
             raise Denied(401, f"{HEADER} doesn't match the signed Cloudflare Access token.")
+        return User(email, "admin" if email in ADMINS else "viewer", claims.get("iat"))
     return User(email, "admin" if email in ADMINS else "viewer")
 
 
@@ -101,6 +109,69 @@ def note_direct(addr: str | None) -> None:
         return
     with _direct_lock:
         _direct = {"at": time.time(), "addr": addr}
+
+
+_sessions: dict[tuple, float] = {}   # session key -> last request
+_refusals: dict[tuple, float] = {}
+_log_lock = threading.Lock()
+
+
+def client(headers, remote_addr: str | None) -> tuple[str | None, str | None, bool]:
+    """(address, country, came through Cloudflare). Cloudflare's headers name the real client."""
+    via_cf = bool(headers.get("Cf-Ray"))
+    addr = headers.get("Cf-Connecting-Ip") if via_cf else None
+    return addr or remote_addr, headers.get("Cf-Ipcountry") if via_cf else None, via_cf
+
+
+def _who(user: User | None, addr) -> str:
+    if user is None:
+        return "unidentified visitor"
+    role = "Admin" if user.role == "admin" else "Viewer"
+    return f"{user.email} ({role})" if user.email else f"direct access ({role}, no identity)"
+
+
+def who(user: User, headers, remote_addr: str | None) -> str:
+    """The person behind a request, for log lines: email and role, and where from."""
+    addr, country, _ = client(headers, remote_addr)
+    return f"{_who(user, addr)} from {addr}" + (f" [{country}]" if country else "")
+
+
+def log_access(user: User, headers, remote_addr: str | None, now: float | None = None) -> None:
+    """One line per session: a Cloudflare Access sign-in when the token is verified, otherwise
+    the first request after SESSION_GAP_S without any from that person or address."""
+    now = now or time.time()
+    addr, country, via_cf = client(headers, remote_addr)
+    who = user.email or f"direct:{addr}"
+    key = (who, user.signed_in) if user.signed_in else (who,)
+    with _log_lock:
+        last = _sessions.get(key)
+        _sessions[key] = now
+        if len(_sessions) > 2000:  # forget long-idle sessions
+            for k in [k for k, t in _sessions.items() if now - t > SESSION_GAP_S]:
+                del _sessions[k]
+    if last is not None and (user.signed_in or now - last < SESSION_GAP_S):
+        return
+    where = f"{addr}" + (f" [{country}]" if country else "") + (" via Cloudflare" if via_cf else " directly")
+    since = (f", signed in to Cloudflare Access at {time.strftime('%Y-%m-%d %H:%M', time.localtime(user.signed_in))}"
+             if user.signed_in else "")
+    LOG.info("Session started: %s from %s%s", _who(user, addr), where, since)
+
+
+def log_refusal(user: User | None, status: int, reason: str, method: str, path: str, headers,
+                remote_addr: str | None, now: float | None = None) -> None:
+    """A refused request, at most once per REFUSAL_REPEAT_S for the same person and request."""
+    now = now or time.time()
+    addr, country, _ = client(headers, remote_addr)
+    key = (user.email if user else addr, status, method, path)
+    with _log_lock:
+        if now - _refusals.get(key, 0) < REFUSAL_REPEAT_S:
+            return
+        _refusals[key] = now
+        if len(_refusals) > 2000:
+            for k in [k for k, t in _refusals.items() if now - t > REFUSAL_REPEAT_S]:
+                del _refusals[k]
+    LOG.warning("Refused (%d): %s from %s%s: %s %s: %s", status, _who(user, addr), addr,
+                f" [{country}]" if country else "", method, path, reason)
 
 
 def allowed(user: User, method: str, path: str) -> bool:

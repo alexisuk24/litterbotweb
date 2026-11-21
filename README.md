@@ -47,7 +47,8 @@ robot snapshots (litter level, drawer level), and an index of every clip.
 The Cats page uses your corrections.
 
 **Settings** also shows the app logs: the sync collector's log (downloads, activity
-sync, Whisker updates) and the web server's warnings and errors, with a
+sync, Whisker updates), the web server's warnings and errors, and the access log (who
+opened the app, and refused requests; see Access control), with a
 warnings-and-errors filter and a download button. The sync log has the same lines `docker logs`
 shows, but kept across container restarts.
 
@@ -140,6 +141,13 @@ and set these in `compose.yml`:
   that isn't what you want. `/api/health` needs no identity, for Docker and Uptime Kuma.
 - These are environment variables on purpose: nothing in the web UI can change them. The
   Settings page shows the current setup.
+- **Access log** (Settings > Logs > Access, `/data/logs/access.log`): one line when someone
+  starts a session, with their email or address, role, and country, and every refused
+  request, at most once every 10 minutes for the same person and page. A session is a
+  Cloudflare Access sign-in when the token is verified, otherwise the first request after
+  30 minutes idle. Live views are logged when they start and end, with the robot, how long
+  they ran and why they ended (stopped, the 10-minute limit, page hidden or closed, connection
+  lost, or the page stopped responding). Health checks (`/api/health`) aren't logged anywhere.
 
 ### Monitoring with Uptime Kuma
 
@@ -226,7 +234,7 @@ For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DR
 | `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
 | `LR_WEB` | 1 | Serve the web UI on port 2287 from the collector's process (`0` = collector only; run `python web.py` separately) |
 | `DB_PATH` | /data/litterrobot.db | Database location |
-| `LOG_DIR` | /data/logs | Where `sync.log` and `web.log` are written (1 MB each, 3 rotated copies kept) |
+| `LOG_DIR` | /data/logs | Where `sync.log`, `web.log` and `access.log` are written (1 MB each, 3 rotated copies kept) |
 
 ## How the API works
 

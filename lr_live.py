@@ -24,6 +24,11 @@ from pylitterbot.robot.litterrobot5 import LitterRobot5
 from pylitterbot.utils import first_value
 
 LOG = logging.getLogger("lr_live")
+ACCESS_LOG = logging.getLogger("lr_access")  # access.log: who watched, for how long
+
+# why the page stopped a view (sent with its close request); anything else is logged as "closed"
+END_REASONS = {"stopped": "stopped", "limit": "reached the 10-minute limit", "hidden": "page hidden",
+               "left": "page closed", "failed": "connection lost", "error": "couldn't connect"}
 
 IDLE_TIMEOUT_S = 45  # the page polls every second while it's open
 MAX_SESSIONS = 4
@@ -35,11 +40,12 @@ class LiveError(Exception):
 
 
 class _Session:
-    def __init__(self, serial: str, relay: CameraSignalingRelay) -> None:
+    def __init__(self, serial: str, relay: CameraSignalingRelay, who: str, robot: str) -> None:
         self.serial = serial
         self.relay = relay
         self.candidates: list[dict[str, Any]] = []  # from the camera, for the browser to poll
-        self.seen = time.monotonic()
+        self.seen = self.started = time.monotonic()
+        self.who, self.robot = who, robot
 
 
 _loop: asyncio.AbstractEventLoop | None = None
@@ -94,8 +100,9 @@ def _ice_servers(turn_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return servers
 
 
-async def start(serial: str) -> dict[str, Any]:
-    """Wake the camera and return what the browser needs to build its offer."""
+async def start(serial: str, who: str = "someone") -> dict[str, Any]:
+    """Wake the camera and return what the browser needs to build its offer. `who` names the
+    viewer in the access log."""
     robot = await _robot(serial)
     if len(_sessions) >= MAX_SESSIONS:
         raise LiveError("Too many live views are open; close one and try again")
@@ -110,7 +117,8 @@ async def start(serial: str) -> dict[str, Any]:
         LOG.warning("Live view: %s", err)
         raise LiveError("Whisker didn't start a camera session") from err
     sid = uuid.uuid4().hex
-    _sessions[sid] = _Session(serial, CameraSignalingRelay(client))
+    _sessions[sid] = _Session(serial, CameraSignalingRelay(client), who, robot.name)
+    ACCESS_LOG.info("Live view started: %s on %s", who, robot.name)
     return {"id": sid, "ice_servers": _ice_servers(session.turn_servers), "view": await robot.get_camera_view()}
 
 
@@ -129,7 +137,7 @@ async def offer(sid: str, sdp: str) -> str:
     try:
         await s.relay.start(sdp, lambda a: answer.done() or answer.set_result(a), s.candidates.append)
     except CameraStreamException as err:
-        await close(sid)
+        await close(sid, "the camera didn't answer")
         LOG.warning("Live view: %s", err)
         raise LiveError("The camera didn't answer; it may be asleep or offline") from err
     return await answer
@@ -144,9 +152,12 @@ async def candidates(sid: str, after: int) -> list[dict[str, Any]]:
     return _session(sid).candidates[after:]
 
 
-async def close(sid: str) -> None:
+async def close(sid: str, reason: str = "closed") -> None:
     s = _sessions.pop(sid, None)
     if s is not None:
+        secs = round(time.monotonic() - s.started)
+        ACCESS_LOG.info("Live view ended: %s on %s after %s (%s)", s.who, s.robot,
+                        f"{secs // 60}m {secs % 60:02d}s" if secs >= 60 else f"{secs}s", reason)
         await s.relay.close()
 
 
@@ -160,4 +171,4 @@ async def _reap() -> None:
         await asyncio.sleep(15)
         now = time.monotonic()
         for sid in [k for k, s in _sessions.items() if now - s.seen > IDLE_TIMEOUT_S]:
-            await close(sid)
+            await close(sid, "the page stopped responding")
