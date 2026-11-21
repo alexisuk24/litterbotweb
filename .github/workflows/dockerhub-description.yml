@@ -1,0 +1,25 @@
+name: Docker Hub description
+
+# Publishes docs/docker.md as the Docker Hub overview, and the GitHub repo description as
+# its short description, when either changes in a release (or when run by hand).
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/docker.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+jobs:
+  description:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}  # needs Read, Write & Delete
+          repository: alexisuk24/litterbotweb
+          readme-filepath: docs/docker.md
+          short-description: ${{ github.event.repository.description }}

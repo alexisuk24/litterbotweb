@@ -8,6 +8,37 @@ It also collects the robot's metadata into a local SQLite database
 visit with weight, duration and waste type, plus clean cycles and offline events),
 robot snapshots (litter level, drawer level), and an index of every clip.
 
+## Quick start (Docker)
+
+The image is on Docker Hub as
+[`alexisuk24/litterbotweb`](https://hub.docker.com/r/alexisuk24/litterbotweb).
+In a folder with `clips` and `data` folders owned by uid/gid 1000
+(`sudo chown -R 1000:1000 clips data`):
+
+```yaml
+# compose.yml
+services:
+  lr-clips:
+    image: alexisuk24/litterbotweb:latest
+    container_name: lr-clips
+    restart: unless-stopped
+    environment:
+      LR_USERNAME: ${LR_USERNAME:?Set LR_USERNAME in .env}
+      LR_PASSWORD: ${LR_PASSWORD:?Set LR_PASSWORD in .env}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "2287:2287"
+    volumes:
+      - ./clips:/clips
+      - ./data:/data
+```
+
+Put `LR_USERNAME`, `LR_PASSWORD` and `TZ` in a `.env` file next to it, run
+`docker compose up -d`, and open `http://<host>:2287`. The
+[container guide](docs/docker.md), which is also the Docker Hub overview, covers tags,
+volumes, settings, hardware encoding, monitoring and updating. This repo's
+[`compose.yml`](compose.yml) and [`.env.example`](.env.example) have every option.
+
 ## Web UI (port 2287)
 
 - **Events**: every pet visit with the camera clips recorded around it. Click a
@@ -199,11 +230,11 @@ python lr_clips.py --dump ./api-dump    # first: look at what the API returns
 python lr_clips.py --out ./clips        # then: download the last 7 days
 ```
 
-Or as a container that polls hourly: copy this folder to
-`/data/Containers/home/litterrobot-clips/`, create `.env` from `.env.example`, then
-`docker compose pull && docker compose up -d`. Already-downloaded clips are skipped.
+Or as a container that syncs hourly (see [Quick start](#quick-start-docker)): copy
+`compose.yml` and `.env.example` to a folder, rename `.env.example` to `.env` and fill it
+in, then run `docker compose pull && docker compose up -d`. Already-downloaded clips are skipped.
 `compose.yml` uses the published image; to run your own changes, build it first under the
-same name (`docker build -t alexisuk24/lr_video_downloader:latest .`), then `docker compose up -d`.
+same name (`docker build -t alexisuk24/litterbotweb:latest .`), then `docker compose up -d`.
 
 Output layout: `clips/<robot name>/<robot name>_<YYYY-MM-DD>_<HH-MM-SS>.mp4`
 
@@ -230,7 +261,7 @@ checks for). `latest` includes the VAAPI drivers for both Intel (`intel`) and AM
 ```bash
 docker buildx build --pull --platform linux/amd64 \
   --provenance=mode=max --sbom=true \
-  -t alexisuk24/lr_video_downloader:latest --push .
+  -t alexisuk24/litterbotweb:latest --push .
 ```
 
 For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DRIVERS=intel`

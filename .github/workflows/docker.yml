@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: alexisuk24/lr_video_downloader
+  IMAGE: alexisuk24/litterbotweb
 
 jobs:
   test:
