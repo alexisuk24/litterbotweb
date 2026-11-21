@@ -67,6 +67,15 @@ works while Whisker still has the clip (about 7 days without Whisker+).
 
 **Settings** has the Whisker sync switch and the weight unit (kg by default, or lb).
 
+**Notifications** (Settings): push notifications through [Pushover](https://pushover.net).
+Enter your Pushover user key and an API token (create an application on pushover.net),
+optionally the address you open this app at so notifications link back to it, and use
+**Send test** to check. After each sync the collector sends anything new: each cat's
+warnings from the Cats page and robot problems (drawer full, other faults, litter low,
+offline). Each type of alert has its own checkbox, all on by default.
+A problem is sent once and again only if it clears and comes back; several new ones arrive
+as one notification. A burst of visits in 24 hours is sent at high priority.
+
 **Refresh** (top right on every page) runs a sync immediately instead of waiting for
 the next scheduled one. It's disabled while a sync is running and for 5 seconds after
 one finishes.

@@ -45,6 +45,7 @@ from pylitterbot.camera import VideoClip, VideoPlayback, local_timezone_name
 from pylitterbot.robot.litterrobot5 import LitterRobot5
 
 import lr_db
+import lr_notify
 
 LOG = logging.getLogger("lr_clips")
 ACTIVITY_PAGE = 100
@@ -644,6 +645,10 @@ async def main() -> int:
                     apply_retention(db, args)
                 except Exception:
                     LOG.exception("retention failed")
+                try:
+                    await asyncio.to_thread(lr_notify.after_sync)
+                except Exception:
+                    LOG.exception("notifications failed")
             lr_db.set_state(db, "sync_error", error)
             lr_db.set_state(db, "sync_finished", str(time.time()))
             lr_db.set_state(db, "sync_running", "0")

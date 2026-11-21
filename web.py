@@ -744,6 +744,12 @@ def api_settings():
             if body["clip_tz"] not in lr_db.CLIP_TZ_CHOICES:
                 abort(400)
             lr_db.set_state(conn, "clip_tz", body["clip_tz"])
+        if "notify" in body:
+            import lr_notify
+            try:
+                lr_notify.save_settings(conn, body["notify"] or {})
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
         conn.commit()
     pending = conn.execute("SELECT COUNT(*) AS n FROM whisker_pushes WHERE status IN ('pending', 'sending')").fetchone()["n"]
     failed = conn.execute(
@@ -751,8 +757,20 @@ def api_settings():
         "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)").fetchone()["n"]
     return jsonify(writeback=lr_db.writeback_enabled(conn), unit=weight_unit(), pending=pending, failed=failed,
                    retention=retention_info(), clip_tz=lr_db.clip_list_tz(conn),
-                   server_tz=local_timezone_name(),
+                   server_tz=local_timezone_name(), notify=_notify_settings(conn),
                    sync_interval=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
+
+
+def _notify_settings(conn) -> dict:
+    import lr_notify
+    cfg = lr_notify.settings(conn)
+    # the token and key never go back to the browser; the page shows the last few characters
+    return {"enabled": cfg["enabled"], "link": cfg["link"],
+            "categories": [{"id": cid, "group": grp, "label": label, "detail": detail, "on": cid not in cfg["off"]}
+                           for cid, grp, label, detail in lr_notify.CATEGORIES],
+            "user_hint": cfg["user"][-4:] if cfg["user"] else None,
+            "token_hint": cfg["token"][-4:] if cfg["token"] else None,
+            "last_sent": cfg["last_sent"], "last_error": cfg["last_error"]}
 
 
 LOG_TAIL_BYTES = 512 * 1024
@@ -881,18 +899,19 @@ def cat_baselines(pets, refs, active, now, tz, end=None):
 
 
 def baseline_insights(name, b, unit, weight_flagged):
-    """Plain-language flags where a cat is outside its own normal range."""
+    """Plain-language flags where a cat is outside its own normal range, as (kind, text)."""
     out = []
     v = b.get("visits")
     if v:
         if v["last24"] > v["day_high"] and v["last24"] >= 4:
-            out.append(f"{name} visited {v['last24']} times in the last 24 hours (usually about {v['mean']:.1f}/day). "
+            out.append(("visits_burst", f"{name} visited {v['last24']} times in the last 24 hours (usually about {v['mean']:.1f}/day). "
                        f"Many visits in a short time can be a sign of a urinary problem; if {name} is straining "
-                       f"or producing little, call your vet.")
+                       f"or producing little, call your vet."))
         elif not v["low"] <= v["recent"] <= v["high"]:
             word = "more" if v["recent"] > v["high"] else "less"
-            out.append(f"{name} is visiting {word} often than usual: {v['recent']:.1f}/day over the last "
-                       f"{RECENT_DAYS} days, against a usual {v['low']:.1f}–{v['high']:.1f}/day.")
+            out.append(("visits_" + word, f"{name} is visiting {word} often than usual: {v['recent']:.1f}/day "
+                                          f"over the last {RECENT_DAYS} days, against a usual "
+                                          f"{v['low']:.1f}–{v['high']:.1f}/day."))
     d = b.get("duration")
     if d and d["long"]:
         n = len(d["long"])
@@ -903,12 +922,13 @@ def baseline_insights(name, b, unit, weight_flagged):
                    f"(over {_fmt_dur(d['long_over'])}; typical is {_fmt_dur(d['median'])})")
             if empty:
                 msg += f", {empty} with no waste detected. Long visits with little output can mean straining"
-            out.append(msg + ".")
+            out.append(("long_visits", msg + "."))
     w = b.get("weight")
     if w and w["recent"] is not None and not weight_flagged and not w["low"] <= w["recent"] <= w["high"]:
         word = "below" if w["recent"] < w["low"] else "above"
-        out.append(f"{name}'s weight over the last {RECENT_DAYS} days ({fmt_weight(w['recent'], unit)}) is {word} "
-                   f"the usual range ({fmt_weight(w['low'], unit)}–{fmt_weight(w['high'], unit)}).")
+        out.append(("weight_" + word, f"{name}'s weight over the last {RECENT_DAYS} days "
+                                      f"({fmt_weight(w['recent'], unit)}) is {word} the usual range "
+                                      f"({fmt_weight(w['low'], unit)}–{fmt_weight(w['high'], unit)})."))
     return out
 
 
@@ -1065,8 +1085,8 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
     by_pet = {k["pet"]: k for k in kpis}
     for p in pets:
         if p["active"]:
-            out += [("warn", t, p["id"]) for t in _cat_insights(p, by_pet[p["id"]], baselines.get(p["id"]) or {},
-                                                                  kpis, visits, n_days, now, unit)]
+            out += [("warn", t, p["id"], kind) for kind, t in _cat_insights(
+                p, by_pet[p["id"]], baselines.get(p["id"]) or {}, kpis, visits, n_days, now, unit)]
     total = [sum(hourly[k][h] for k in hourly) for h in range(24)]
     if sum(total):
         peak = max(range(24), key=lambda h: total[h])
@@ -1088,21 +1108,23 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
         out.append(("warn", f"The robot went offline {len(offline)} time{'s' if len(offline) != 1 else ''}, "
                             f"most recently {datetime.fromtimestamp(max(offline), tz).strftime('%b %d %H:%M')}."))
     order = {"warn": 0, "info": 1}
-    out = [x if len(x) == 3 else (*x, None) for x in out]
-    return [{"level": lvl, "text": t, "pet": pet} for lvl, t, pet in sorted(out, key=lambda x: order[x[0]])]
+    out = [x if len(x) == 4 else (*x, None, None) for x in out]
+    return [{"level": lvl, "text": t, "pet": pet, "kind": kind}
+            for lvl, t, pet, kind in sorted(out, key=lambda x: order[x[0]])]
 
 
-def _cat_insights(p, k, b, kpis, visits, n_days, now, unit) -> list[str]:
-    """Warnings about one cat; the Cats page shows them behind the ⚠ on its card."""
+def _cat_insights(p, k, b, kpis, visits, n_days, now, unit) -> list[tuple[str, str]]:
+    """Warnings about one cat as (kind, text); the Cats page shows them behind the ⚠ on its
+    card, and notifications use the kind to tell a new problem from one already sent."""
     out = []
     name = p["name"]
     if k["last_visit"] is None:
         if k["prev_per_day"]:
-            out.append(f"{name} has no recorded visits in this period.")
+            out.append(("no_visits", f"{name} has no recorded visits in this period."))
         return out
     hours = (now - k["last_visit"]) / 3600
     if hours >= 24 and k["per_day"] >= 1:
-        out.append(f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day).")
+        out.append(("no_visit_hours", f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day)."))
     if not b.get("ready"):
         # no baseline yet: fall back to comparing with the week before
         week = 7 * 86400
@@ -1113,20 +1135,76 @@ def _cat_insights(p, k, b, kpis, visits, n_days, now, unit) -> list[str]:
             delta = (this_wk - last_wk) / last_wk
             if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
                 word = "up" if delta > 0 else "down"
-                out.append(f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
-                           f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before).")
+                out.append(("visits_" + word, f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
+                                              f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
     weight_flagged = k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5
     if weight_flagged:
         pct, ch = k["weight_change_pct"], k["weight_change"]
-        out.append(f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) over this period. "
-                   f"A sustained change of 5%+ is worth mentioning to your vet.")
+        out.append(("weight_change", f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) "
+                                     f"over this period. A sustained change of 5%+ is worth mentioning to your vet."))
     if b.get("ready"):
         out += baseline_insights(name, b, unit, weight_flagged)
     w = k["waste"]
     any_feces = any(x["waste"].get("Feces") for x in kpis)
     if any_feces and n_days >= 7 and sum(w.values()) >= 10 and not w.get("Feces"):
-        out.append(f"{name} has no stool visits recorded in {n_days} days.")
+        out.append(("no_stool", f"{name} has no stool visits recorded in {n_days} days."))
     return out
+
+
+# ------------------------------------------------------------ notifications
+
+
+# which notification category (lr_notify.CATEGORIES) each kind of cat warning belongs to
+CAT_CATEGORIES = {"visits_burst": "burst", "visits_more": "more_visits", "visits_less": "fewer_visits",
+                  "visits_up": "more_visits", "visits_down": "fewer_visits",
+                  "no_visit_hours": "no_visits", "no_visits": "no_visits", "long_visits": "long_visits",
+                  "weight_change": "weight_change", "weight_below": "weight_range", "weight_above": "weight_range",
+                  "no_stool": "no_stool"}
+DRAWER_FAULTS = ("Waste drawer full", "Drawer-full indicator on")
+
+
+def current_alerts() -> list[dict]:
+    """Problems worth a push notification right now. `key` stays the same while a problem
+    lasts, so lr_notify sends each one once. Needs a request context (lr_notify sets one up)."""
+    out = []
+    with app.test_request_context("/api/analysis?days=30"):
+        data = api_analysis().get_json()
+    names = {p["id"]: p["name"] for p in data["pets"]}
+    for i in data["insights"]:
+        if i["pet"] and i["kind"]:
+            out.append({"key": f"cat:{i['pet']}:{i['kind']}", "group": "cats", "category": CAT_CATEGORIES[i["kind"]],
+                        "subject": names.get(i["pet"], "A cat"), "text": i["text"],
+                        "priority": 1 if i["kind"] == "visits_burst" else 0})
+    for r in db().execute("SELECT serial, name, info FROM robots WHERE info IS NOT NULL"):
+        info = json.loads(r["info"])
+        problems = [(f"fault:{f}", "drawer_full" if f in DRAWER_FAULTS else "fault", f)
+                    for f in info.get("faults") or []]
+        if info.get("online") is False:
+            problems.append(("offline", "offline", "Offline: the robot isn't connected to Whisker."))
+        if info.get("litter_state") in ("LOW", "EMPTY", "REFILL"):
+            problems.append(("litter", "litter",
+                             f"Litter level is {info['litter_state'].lower()}; top up the hopper or globe."))
+        out += [{"key": f"robot:{r['serial']}:{k}", "group": "robots", "category": cat, "subject": r["name"],
+                 "text": t, "priority": 0} for k, cat, t in problems]
+    return out
+
+
+@app.route("/api/notify/test", methods=["POST"])
+def api_notify_test():
+    """Send a test notification with the keys typed on the Settings page (or the saved ones)."""
+    import lr_notify
+    body = request.get_json(force=True, silent=True) or {}
+    conn = db()
+    cfg = lr_notify.settings(conn)
+    token, user = body.get("token") or cfg["token"], body.get("user") or cfg["user"]
+    if not token or not user:
+        return jsonify(error="Enter your user key and API token first."), 400
+    try:
+        lr_notify.send(token, user, "Litter Robot", "Test notification: Pushover is set up.",
+                       url=cfg["link"] or None)
+    except lr_notify.PushoverError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(ok=True)
 
 
 # ------------------------------------------------------------ vet report
