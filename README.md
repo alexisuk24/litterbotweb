@@ -201,7 +201,9 @@ python lr_clips.py --out ./clips        # then: download the last 7 days
 
 Or as a container that polls hourly: copy this folder to
 `/data/Containers/home/litterrobot-clips/`, create `.env` from `.env.example`, then
-`docker compose up -d --build`. Already-downloaded clips are skipped.
+`docker compose pull && docker compose up -d`. Already-downloaded clips are skipped.
+`compose.yml` uses the published image; to run your own changes, build it first under the
+same name (`docker build -t alexisuk24/lr_video_downloader:latest .`), then `docker compose up -d`.
 
 Output layout: `clips/<robot name>/<robot name>_<YYYY-MM-DD>_<HH-MM-SS>.mp4`
 
