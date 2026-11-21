@@ -19,6 +19,7 @@
   function paint() {
     const on = live.id != null;
     el('liveStart').hidden = on;
+    el('liveBar').classList.toggle('idle', !on);
     el('liveStop').hidden = !on;
     el('liveVideo').hidden = !on;
     el('liveView').hidden = !on || !live.view;

@@ -22,7 +22,8 @@ const ago = ts => {
 };
 const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
 const pct = v => v == null ? '—' : `${Math.round(v)}%`;
-const titleCase = t => t ? t.toLowerCase().replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : '—';
+// UPDATE_SUCCESSFUL, UpdateSuccessful and OPTIMAL all become "Update successful" / "Optimal"
+const titleCase = t => t ? t.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : '—';
 function wifi(rssi) {
   if (rssi == null) return ['—', ''];
   const q = rssi >= -60 ? 'Excellent' : rssi >= -70 ? 'Good' : rssi >= -80 ? 'Fair' : 'Weak';
@@ -106,8 +107,9 @@ function firmwareTable(history, raw) {
   for (const f of history) if (!current[f.component]) current[f.component] = f;  // newest first
   const rows = Object.values(current);
   if (!rows.length) return `<div><code>${esc(raw || 'unknown')}</code></div>`;
-  return `<table class="fwt">${rows.map(f => `<tr><td>${esc(fwName(f.component))}</td><td><code>${esc(f.version)}</code></td>
-    <td class="muted">${f.previous ? `updated ${esc(day(f.at))}` : `since ${esc(day(f.at))} or earlier`}</td></tr>`).join('')}</table>`;
+  return `<table class="fwt">${rows.map(f => `<tr><td>${esc(fwName(f.component))}
+    <div class="when">${f.previous ? `updated ${esc(day(f.at))}` : `since ${esc(day(f.at))} or earlier`}</div></td>
+    <td><code>${esc(f.version)}</code></td></tr>`).join('')}</table>`;
 }
 
 function firmwareHistory(history) {
