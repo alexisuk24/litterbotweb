@@ -236,6 +236,18 @@ For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DR
 | `DB_PATH` | /data/litterrobot.db | Database location |
 | `LOG_DIR` | /data/logs | Where `sync.log`, `web.log` and `access.log` are written (1 MB each, 3 rotated copies kept) |
 
+## Tests
+
+```bash
+pip install "pylitterbot>=2025.9.0" flask aiohttp reportlab "pyjwt[crypto]" pytest
+python -m pytest
+```
+
+Each test gets its own empty database and made-up robots, cats and visits; nothing touches
+Whisker or your data. The retention tests that encode video need `ffmpeg` and are skipped
+without it. GitHub Actions runs the tests on every push, and also checks that the browser
+scripts parse.
+
 ## How the API works
 
 | Step | Request | Notes |

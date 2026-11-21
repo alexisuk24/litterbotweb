@@ -8,3 +8,4 @@ s3-check/
 clips/
 data/
 .venv/
+.pytest_cache/

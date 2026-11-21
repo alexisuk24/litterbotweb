@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.15"
+      - name: Install ffmpeg (for the clip retention tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install dependencies (as in the Dockerfile, plus pytest)
+        run: pip install "pylitterbot>=2025.9.0" flask aiohttp certifi urllib3 reportlab "pyjwt[crypto]" pytest
+      - name: Run tests
+        run: python -m pytest
+      - name: Check browser scripts parse
+        run: |
+          for f in static/*.js; do node --check "$f"; done
+          # inline <script> blocks in the page templates (skipping ones with template tags)
+          python - <<'PY'
+          import glob, re, subprocess, tempfile
+          for t in glob.glob("templates/*.html"):
+              for block in re.findall(r"<script>(.*?)</script>", open(t).read(), re.S):
+                  if "{{" in block:
+                      continue
+                  with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+                      f.write(block)
+                  subprocess.run(["node", "--check", f.name], check=True)
+                  print("ok", t)
+          PY
