@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!static/vendor/**"   # Chart.js, downloaded at build time
+    - "!**/*.min.js"
+  path_instructions:
+    - path: "lr_auth.py"
+      instructions: |
+        Security-sensitive: Admin/Viewer roles from Cloudflare Access. Check that the
+        Cf-Access-Jwt-Assertion is verified (signature, aud, iss, exp) before the email header is
+        trusted, that Viewers can't reach anything that changes state, and that requests through
+        Cloudflare without an identity are refused. Configuration must stay in environment variables.
+    - path: "web.py"
+      instructions: |
+        Flask app. Every request passes _check_access (lr_auth) first; new routes that change
+        state must not be reachable by Viewers. SQL must stay parameterized. File paths built from
+        request input must be resolved and checked to stay under their root (see _clip_path,
+        pet_photo). Anything sent to Whisker goes through the whisker_pushes queue and must respect
+        the 7-day edit window and the write-back setting.
+    - path: "lr_clips.py"
+      instructions: |
+        The collector: an asyncio loop. ffmpeg is run with argument lists, never a shell. Retention
+        deletes and re-encodes clip files, so check that clips marked keep are never touched and
+        that a failure leaves the original file in place.
+    - path: "lr_db.py"
+      instructions: |
+        SQLite shared by the collector and the web UI. Migrations in _migrate run on every connect
+        and must be idempotent. Writes should be short; long-held write transactions block the UI.
+    - path: "static/**/*.js"
+      instructions: &pages |
+        Pages build HTML in template strings: every value from the API must go through esc() before
+        it's inserted. templates/clips.html doesn't load static/common.js, so anything it uses must
+        be defined on that page. Controls hidden from Viewers (CAN_EDIT) are only cosmetic; the
+        server enforces roles.
+    - path: "templates/**/*.html"
+      instructions: *pages
+    - path: "tests/**"
+      instructions: |
+        pytest. Each test gets its own empty database through the env fixture in conftest.py and
+        must not touch Whisker, the network (except local test servers) or real data.
