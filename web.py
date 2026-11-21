@@ -1058,42 +1058,10 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
     unit = weight_unit()
     out = []
     by_pet = {k["pet"]: k for k in kpis}
-    week = 7 * 86400
     for p in pets:
-        if not p["active"]:
-            continue
-        k = by_pet[p["id"]]
-        name = p["name"]
-        if k["last_visit"] is None:
-            if k["prev_per_day"]:
-                out.append(("warn", f"{name} has no recorded visits in this period."))
-            continue
-        hours = (now - k["last_visit"]) / 3600
-        if hours >= 24 and k["per_day"] >= 1:
-            out.append(("warn", f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day)."))
-        b = baselines.get(p["id"]) or {}
-        if not b.get("ready"):
-            # no baseline yet: fall back to comparing with the week before
-            mine = [v["ts"] for v in visits if v["pet"] == p["id"]]
-            this_wk = sum(1 for t in mine if t >= now - week) / 7
-            last_wk = sum(1 for t in mine if now - 2 * week <= t < now - week) / 7
-            if n_days >= 14 and last_wk:
-                delta = (this_wk - last_wk) / last_wk
-                if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
-                    word = "up" if delta > 0 else "down"
-                    out.append(("warn", f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
-                                        f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
-        weight_flagged = k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5
-        if weight_flagged:
-            pct, ch = k["weight_change_pct"], k["weight_change"]
-            out.append(("warn", f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) over this period. "
-                                f"A sustained change of 5%+ is worth mentioning to your vet."))
-        if b.get("ready"):
-            out += [("warn", t) for t in baseline_insights(name, b, unit, weight_flagged)]
-        w = k["waste"]
-        any_feces = any(x["waste"].get("Feces") for x in kpis)
-        if any_feces and n_days >= 7 and sum(w.values()) >= 10 and not w.get("Feces"):
-            out.append(("warn", f"{name} has no stool visits recorded in {n_days} days."))
+        if p["active"]:
+            out += [("warn", t, p["id"]) for t in _cat_insights(p, by_pet[p["id"]], baselines.get(p["id"]) or {},
+                                                                  kpis, visits, n_days, now, unit)]
     total = [sum(hourly[k][h] for k in hourly) for h in range(24)]
     if sum(total):
         peak = max(range(24), key=lambda h: total[h])
@@ -1115,7 +1083,45 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
         out.append(("warn", f"The robot went offline {len(offline)} time{'s' if len(offline) != 1 else ''}, "
                             f"most recently {datetime.fromtimestamp(max(offline), tz).strftime('%b %d %H:%M')}."))
     order = {"warn": 0, "info": 1}
-    return [{"level": lvl, "text": t} for lvl, t in sorted(out, key=lambda x: order[x[0]])]
+    out = [x if len(x) == 3 else (*x, None) for x in out]
+    return [{"level": lvl, "text": t, "pet": pet} for lvl, t, pet in sorted(out, key=lambda x: order[x[0]])]
+
+
+def _cat_insights(p, k, b, kpis, visits, n_days, now, unit) -> list[str]:
+    """Warnings about one cat; the Analysis page shows them behind the ⚠ on its card."""
+    out = []
+    name = p["name"]
+    if k["last_visit"] is None:
+        if k["prev_per_day"]:
+            out.append(f"{name} has no recorded visits in this period.")
+        return out
+    hours = (now - k["last_visit"]) / 3600
+    if hours >= 24 and k["per_day"] >= 1:
+        out.append(f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day).")
+    if not b.get("ready"):
+        # no baseline yet: fall back to comparing with the week before
+        week = 7 * 86400
+        mine = [v["ts"] for v in visits if v["pet"] == p["id"]]
+        this_wk = sum(1 for t in mine if t >= now - week) / 7
+        last_wk = sum(1 for t in mine if now - 2 * week <= t < now - week) / 7
+        if n_days >= 14 and last_wk:
+            delta = (this_wk - last_wk) / last_wk
+            if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
+                word = "up" if delta > 0 else "down"
+                out.append(f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
+                           f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before).")
+    weight_flagged = k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5
+    if weight_flagged:
+        pct, ch = k["weight_change_pct"], k["weight_change"]
+        out.append(f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) over this period. "
+                   f"A sustained change of 5%+ is worth mentioning to your vet.")
+    if b.get("ready"):
+        out += baseline_insights(name, b, unit, weight_flagged)
+    w = k["waste"]
+    any_feces = any(x["waste"].get("Feces") for x in kpis)
+    if any_feces and n_days >= 7 and sum(w.values()) >= 10 and not w.get("Feces"):
+        out.append(f"{name} has no stool visits recorded in {n_days} days.")
+    return out
 
 
 # ------------------------------------------------------------ vet report

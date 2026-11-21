@@ -39,6 +39,13 @@
 .cat .stat .usual { color: var(--muted); }
 .cat .stat .usual.off { color: var(--warn); }
 .cat .usual-note { font-size: .75rem; margin-top: .35rem; }
+.cat .warn-btn { margin-left: auto; display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; font-weight: 650; padding: .3rem .55rem;
+                 color: var(--warn); background: var(--warn-bg); border-color: transparent; font-variant-numeric: tabular-nums; }
+.cat .warn-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.cat .warn-btn:hover { border-color: var(--warn); }
+.cat .warn-btn + .report-btn { margin-left: 0; }
+.confirm .insights { margin-top: 0; max-height: 60vh; overflow-y: auto; }
+#warnings { width: min(44rem, calc(100vw - 2rem)); }
 .cat .report-btn { margin-left: auto; display: inline-flex; align-items: center; gap: .35rem; font-size: .78rem; font-weight: 500; padding: .3rem .6rem; }
 .cat .report-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .confirm .dates { display: flex; gap: .75rem; flex-wrap: wrap; }
@@ -73,6 +80,13 @@ table.mix td.n { text-align: right; font-variant-numeric: tabular-nums; }
   </div>
   <div id="root"><div class="empty">Loading…</div></div>
 </div>
+<dialog class="confirm" id="warnings" aria-labelledby="warningsTitle">
+  <form method="dialog">
+    <h3 id="warningsTitle"></h3>
+    <ul class="insights" id="warningsList"></ul>
+    <div class="btns"><button class="btn">Close</button></div>
+  </form>
+</dialog>
 <dialog class="confirm" id="report" aria-labelledby="reportTitle">
   <form method="dialog" id="reportForm">
     <h3 id="reportTitle">Vet report</h3>

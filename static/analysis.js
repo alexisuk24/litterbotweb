@@ -50,7 +50,7 @@ function render() {
   <div class="grid">
     <div class="card panel span-12">
       <h2>Insights</h2>
-      <ul class="insights">${d.insights.map(i => `<li class="${i.level}"><span class="ic">${i.level === 'warn' ? '⚠' : 'ℹ'}</span><span>${esc(i.text)}</span></li>`).join('') || '<li><span class="ic">ℹ</span><span>Nothing notable in this period.</span></li>'}</ul>
+      <ul class="insights">${insightsList(d)}</ul>
     </div>
 
     <div class="span-12 tiles">
@@ -112,6 +112,15 @@ function render() {
   snapshotChart('cDrawer', d, 'drawer');
 }
 
+// Robot-wide insights; each cat's warnings live behind the ⚠ on its card.
+function insightsList(d) {
+  const item = (level, html) => `<li class="${level}"><span class="ic">${level === 'warn' ? '⚠' : 'ℹ'}</span><span>${html}</span></li>`;
+  return d.insights.filter(i => !i.pet).map(i => item(i.level, esc(i.text))).join('')
+    || item('info', 'Nothing robot-wide to note in this period.');
+}
+
+const catWarnings = id => s.data.insights.filter(i => i.pet === id);
+
 function tile(k, v, sub) {
   return `<div class="card tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${sub}</div></div>`;
 }
@@ -126,8 +135,10 @@ function catCard(p) {
   const total = Object.values(w).reduce((a, b) => a + b, 0);
   const split = total ? Object.entries(w).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${esc(t)} ${Math.round(100 * n / total)}%`).join(' · ') : '—';
   const u = usual(k.baseline);
+  const warns = catWarnings(p.id).length;
   return `<div class="card cat" style="--c:${color}">
     <div class="name">${catBadge(p, p.slot, 40)}${esc(p.name)}${p.active ? '' : ' <span class="badge off">inactive</span>'}
+      ${warns ? `<button class="btn warn-btn" data-warnings="${esc(p.id)}" title="${warns} warning${warns === 1 ? '' : 's'}" aria-label="${warns} warning${warns === 1 ? '' : 's'} for ${esc(p.name)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4.5M12 17h.01"/></svg>${warns}</button>` : ''}
       <button class="btn report-btn" data-report="${esc(p.id)}" title="Download a PDF report for your vet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h6"/></svg>Report</button></div>
     <div class="stats">
       <div class="stat"><div class="k">Visits / day</div><div class="v">${k.per_day ?? 0}</div><div class="d">${trend}</div>${u.visits}</div>
@@ -336,6 +347,17 @@ el('report').addEventListener('close', () => {
   location.href = `/report/${encodeURIComponent(s.reportPet)}.pdf?${q}`;
 });
 el('report').addEventListener('click', e => { if (e.target === el('report')) el('report').close(); });
+// a cat's warnings in a dialog, from the ⚠ on its card
+el('root').addEventListener('click', e => {
+  const b = e.target.closest('[data-warnings]');
+  if (!b) return;
+  const p = s.data.pets.find(x => x.id === b.dataset.warnings);
+  el('warningsTitle').textContent = p.name;
+  el('warningsList').innerHTML = catWarnings(p.id).map(i =>
+    `<li class="warn"><span class="ic">⚠</span><span>${esc(i.text)}</span></li>`).join('');
+  el('warnings').showModal();
+});
+el('warnings').addEventListener('click', e => { if (e.target === el('warnings')) el('warnings').close(); });
 el('reportFrom').addEventListener('change', () => { el('reportTo').min = el('reportFrom').value; });
 window.addEventListener('lr-synced', load);
 
