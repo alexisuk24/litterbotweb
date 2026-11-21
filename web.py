@@ -5,6 +5,7 @@ import bisect
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import statistics
@@ -791,6 +792,121 @@ def _median(xs):
     return statistics.median(xs) if xs else None
 
 
+def _fmt_dur(s: float) -> str:
+    s = round(s)
+    return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+# ------------------------------------------------------------ per-cat baselines
+
+BASELINE_DAYS = 30  # each cat's normal is learned from this many days...
+RECENT_DAYS = 7     # ...ending this long ago, so a current change doesn't blend into its own baseline
+NO_WASTE = (None, "", "Unknown")
+
+
+def _spread(xs, center):
+    """Robust standard deviation: the median absolute deviation, scaled to match a normal sd."""
+    return 1.4826 * statistics.median(abs(x - center) for x in xs)
+
+
+def cat_baselines(pets, refs, active, now, tz, end=None):
+    """Each cat's own normal range (visits per day, visit length, weight) and how the
+    RECENT_DAYS before `end` (default now) compare. Uses every robot, since a cat's
+    habits span all of them."""
+    end = end or now
+    first = db().execute("SELECT MIN(ts) AS ts FROM activities").fetchone()["ts"] or end
+    recent_start = end - RECENT_DAYS * 86400
+    base_start = max(recent_start - BASELINE_DAYS * 86400, first)
+    visits = [annotate(v, refs, active) for v in load_visits(base_start, end, types=("PET_VISIT",))]
+    # whole local days inside the baseline window (a partial first day would undercount)
+    day = datetime.fromtimestamp(base_start, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    if day.timestamp() < base_start:
+        day += timedelta(days=1)
+    days = []
+    while (day + timedelta(days=1)).timestamp() <= recent_start:
+        days.append(day.date())
+        day += timedelta(days=1)
+    didx = {d: i for i, d in enumerate(days)}
+
+    out = {}
+    for p in pets:
+        pid = p["id"]
+        mine = [v for v in visits if v["pet"] == pid]
+        base = [v for v in mine if v["ts"] < recent_start]
+        recent = [v for v in mine if v["ts"] >= recent_start]
+        b = {"days": len(days), "ready": len(days) >= 10 and len(base) >= 5}
+        if not b["ready"]:
+            out[pid] = b
+            continue
+
+        counts = [0] * len(days)
+        for v in base:
+            i = didx.get(datetime.fromtimestamp(v["ts"], tz).date())
+            if i is not None:
+                counts[i] += 1
+        mean, sd = statistics.fmean(counts), statistics.pstdev(counts)
+        half = max(2 * sd / math.sqrt(RECENT_DAYS), 0.5)  # range for a week's average
+        b["visits"] = {"mean": round(mean, 2), "low": round(max(0, mean - half), 2), "high": round(mean + half, 2),
+                       "recent": round(len(recent) / RECENT_DAYS, 2),
+                       "last24": sum(1 for v in mine if v["ts"] >= end - 86400),
+                       "day_high": round(mean + max(3 * sd, 2), 1)}
+
+        durs = [v["duration"] for v in base if v["duration"]]
+        if len(durs) >= 8:
+            m = statistics.median(durs)
+            sp = max(_spread(durs, m), 0.1 * m, 5)
+            long_over = max(m + 3 * sp, 1.5 * m)
+            long = [v for v in recent if (v["duration"] or 0) > long_over]
+            b["duration"] = {"median": round(m), "low": round(max(0, m - 2 * sp)), "high": round(m + 2 * sp),
+                             "long_over": round(long_over),
+                             "long": [{"ts": v["ts"], "duration": v["duration"], "waste": v["waste_type"] or None}
+                                      for v in long]}
+
+        # readings that look like another cat (unreviewed) would skew the range
+        ws = [v["weight"] for v in base if v["weight"] and not v["review"]]
+        rws = [v["weight"] for v in recent if v["weight"] and not v["review"]]
+        if len(ws) >= 5:
+            m = statistics.median(ws)
+            sp = max(_spread(ws, m), 0.01 * m)
+            half = max(2.5 * sp / math.sqrt(max(3, len(rws))), 0.02 * m)
+            b["weight"] = {"median": round(m, 3), "low": round(m - half, 3), "high": round(m + half, 3),
+                           "recent": round(statistics.median(rws), 3) if len(rws) >= 3 else None}
+        out[pid] = b
+    return out
+
+
+def baseline_insights(name, b, unit, weight_flagged):
+    """Plain-language flags where a cat is outside its own normal range."""
+    out = []
+    v = b.get("visits")
+    if v:
+        if v["last24"] > v["day_high"] and v["last24"] >= 4:
+            out.append(f"{name} visited {v['last24']} times in the last 24 hours (usually about {v['mean']:.1f}/day). "
+                       f"Many visits in a short time can be a sign of a urinary problem; if {name} is straining "
+                       f"or producing little, call your vet.")
+        elif not v["low"] <= v["recent"] <= v["high"]:
+            word = "more" if v["recent"] > v["high"] else "less"
+            out.append(f"{name} is visiting {word} often than usual: {v['recent']:.1f}/day over the last "
+                       f"{RECENT_DAYS} days, against a usual {v['low']:.1f}–{v['high']:.1f}/day.")
+    d = b.get("duration")
+    if d and d["long"]:
+        n = len(d["long"])
+        empty = sum(1 for x in d["long"] if x["waste"] in NO_WASTE)
+        recent3 = sum(1 for x in d["long"] if x["ts"] >= time.time() - 3 * 86400)
+        if n >= 3 or recent3 >= 2 or empty >= 2:
+            msg = (f"{name} had {n} unusually long visit{'s' if n != 1 else ''} in the last {RECENT_DAYS} days "
+                   f"(over {_fmt_dur(d['long_over'])}; typical is {_fmt_dur(d['median'])})")
+            if empty:
+                msg += f", {empty} with no waste detected. Long visits with little output can mean straining"
+            out.append(msg + ".")
+    w = b.get("weight")
+    if w and w["recent"] is not None and not weight_flagged and not w["low"] <= w["recent"] <= w["high"]:
+        word = "below" if w["recent"] < w["low"] else "above"
+        out.append(f"{name}'s weight over the last {RECENT_DAYS} days ({fmt_weight(w['recent'], unit)}) is {word} "
+                   f"the usual range ({fmt_weight(w['low'], unit)}–{fmt_weight(w['high'], unit)}).")
+    return out
+
+
 @app.route("/api/analysis")
 def api_analysis():
     tz = local_tz()
@@ -914,8 +1030,11 @@ def api_analysis():
                 pairs[(v["api_pet"] or "none", v["pet"] or "unknown")] += 1
     auto_ided = sum(1 for v in in_range if v["type"] == "PET_VISIT" and v["api_pet"])
 
+    baselines = cat_baselines(pets, refs, active, now, tz)
+    for k in kpis:
+        k["baseline"] = baselines.get(k["pet"])
     insights = build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pairs,
-                              names, offline, interrupted, cycles_daily, now, tz)
+                              names, offline, interrupted, cycles_daily, now, tz, baselines)
 
     return jsonify(
         pets=pets, days=n_days, start=start * 1000, tz=str(tz),
@@ -935,7 +1054,7 @@ def api_analysis():
 
 
 def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pairs, names,
-                   offline, interrupted, cycles_daily, now, tz):
+                   offline, interrupted, cycles_daily, now, tz, baselines):
     unit = weight_unit()
     out = []
     by_pet = {k["pet"]: k for k in kpis}
@@ -952,19 +1071,25 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
         hours = (now - k["last_visit"]) / 3600
         if hours >= 24 and k["per_day"] >= 1:
             out.append(("warn", f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day)."))
-        mine = [v["ts"] for v in visits if v["pet"] == p["id"]]
-        this_wk = sum(1 for t in mine if t >= now - week) / 7
-        last_wk = sum(1 for t in mine if now - 2 * week <= t < now - week) / 7
-        if n_days >= 14 and last_wk:
-            delta = (this_wk - last_wk) / last_wk
-            if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
-                word = "up" if delta > 0 else "down"
-                out.append(("warn", f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
-                                    f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
-        if k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5:
+        b = baselines.get(p["id"]) or {}
+        if not b.get("ready"):
+            # no baseline yet: fall back to comparing with the week before
+            mine = [v["ts"] for v in visits if v["pet"] == p["id"]]
+            this_wk = sum(1 for t in mine if t >= now - week) / 7
+            last_wk = sum(1 for t in mine if now - 2 * week <= t < now - week) / 7
+            if n_days >= 14 and last_wk:
+                delta = (this_wk - last_wk) / last_wk
+                if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
+                    word = "up" if delta > 0 else "down"
+                    out.append(("warn", f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
+                                        f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
+        weight_flagged = k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5
+        if weight_flagged:
             pct, ch = k["weight_change_pct"], k["weight_change"]
             out.append(("warn", f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) over this period. "
                                 f"A sustained change of 5%+ is worth mentioning to your vet."))
+        if b.get("ready"):
+            out += [("warn", t) for t in baseline_insights(name, b, unit, weight_flagged)]
         w = k["waste"]
         any_feces = any(x["waste"].get("Feces") for x in kpis)
         if any_feces and n_days >= 7 and sum(w.values()) >= 10 and not w.get("Feces"):

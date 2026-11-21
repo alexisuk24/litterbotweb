@@ -125,16 +125,41 @@ function catCard(p) {
   const w = k.waste || {};
   const total = Object.values(w).reduce((a, b) => a + b, 0);
   const split = total ? Object.entries(w).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${esc(t)} ${Math.round(100 * n / total)}%`).join(' · ') : '—';
+  const u = usual(k.baseline);
   return `<div class="card cat" style="--c:${color}">
     <div class="name">${catBadge(p, p.slot, 40)}${esc(p.name)}${p.active ? '' : ' <span class="badge off">inactive</span>'}</div>
     <div class="stats">
-      <div class="stat"><div class="k">Visits / day</div><div class="v">${k.per_day ?? 0}</div><div class="d">${trend}</div></div>
-      <div class="stat"><div class="k">Weight</div><div class="v">${fmtW(k.weight)}</div><div class="d">${wch}</div></div>
-      <div class="stat"><div class="k">Typical visit</div><div class="v">${fmtDur(k.median_duration)}</div><div class="d">median duration</div></div>
+      <div class="stat"><div class="k">Visits / day</div><div class="v">${k.per_day ?? 0}</div><div class="d">${trend}</div>${u.visits}</div>
+      <div class="stat"><div class="k">Weight</div><div class="v">${fmtW(k.weight)}</div><div class="d">${wch}</div>${u.weight}</div>
+      <div class="stat"><div class="k">Typical visit</div><div class="v">${fmtDur(k.median_duration)}</div><div class="d">median duration</div>${u.duration}</div>
       <div class="stat"><div class="k">Last visit</div><div class="v" style="font-size:1rem">${ago(k.last_visit)}</div><div class="d">${k.last7 ?? 0} in last 7 days</div></div>
     </div>
     <div class="d muted" style="font-size:.75rem;margin-top:.7rem">${split}</div>
+    ${u.note}
   </div>`;
+}
+
+// The cat's own normal range under each stat, from the 30 days before the last 7;
+// highlighted when the last 7 days fall outside it.
+function usual(b) {
+  const line = (text, off) => `<div class="d usual${off ? ' off' : ''}">${text}</div>`;
+  const out = { visits: '', weight: '', duration: '', note: '' };
+  if (!b) return out;
+  if (!b.ready) {
+    out.note = `<div class="d muted usual-note">Learning normal ranges: ${b.days} of 10 days so far</div>`;
+    return out;
+  }
+  const v = b.visits;
+  if (v) out.visits = line(`last 7d ${v.recent.toFixed(1)} · usual ${v.low.toFixed(1)}–${v.high.toFixed(1)}`,
+                           v.recent < v.low || v.recent > v.high);
+  const w = b.weight;
+  if (w) out.weight = line(`usual ${toUnit(w.low).toFixed(2)}–${fmtW(w.high)}`,
+                           w.recent != null && (w.recent < w.low || w.recent > w.high));
+  const d = b.duration;
+  if (d) out.duration = line(d.long.length
+    ? `⚠ ${d.long.length} over ${fmtDur(d.long_over)} in last 7d`
+    : `usual ${fmtDur(d.low)}–${fmtDur(d.high)}`, d.long.length > 0);
+  return out;
 }
 
 function mixTable(d) {

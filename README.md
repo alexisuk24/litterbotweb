@@ -29,6 +29,11 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   cats that haven't visited, offline events), per-cat cards, visits per day, weight
   trend, time-of-day and weekday×hour patterns, clean cycles, litter/drawer levels,
   and a table of the robot's most common cat mix-ups based on your corrections.
+  Each cat also gets its own normal range, learned from the 30 days before the last 7:
+  visits per day, visit length and weight. The cat cards show it, and insights flag when
+  the last 7 days fall outside it, when a cat visits far more often than usual in 24 hours,
+  and when it has several unusually long visits (noting those with no waste detected,
+  which can mean straining).
 
 Analysis uses your corrections.
 
