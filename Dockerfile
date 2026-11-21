@@ -56,7 +56,7 @@ RUN useradd --uid 1000 --user-group --no-create-home --home-dir /app app \
     && python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade \
-        "pylitterbot>=2025.9.0" flask aiohttp certifi urllib3 \
+        "pylitterbot>=2025.9.0" flask aiohttp certifi urllib3 reportlab \
     && (python -m pip uninstall -y pip setuptools 2>/dev/null || true) \
     && rm -rf /usr/local/lib/python3*/ensurepip \
     && chown -R app:app /opt/venv
@@ -67,7 +67,7 @@ ENV PATH=/opt/venv/bin:$PATH \
 WORKDIR /app
 ADD --checksum=sha256:b38076762f7363bc9e912b68b8e034826798db5df26bb61f000ec2e7a3137bc7 \
     https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js /app/static/vendor/chart.umd.min.js
-COPY lr_clips.py lr_db.py lr_live.py web.py entrypoint.sh /app/
+COPY lr_clips.py lr_db.py lr_live.py lr_report.py web.py entrypoint.sh /app/
 COPY templates /app/templates
 COPY static /app/static
 RUN chmod 755 /app/entrypoint.sh && chmod -R a+rX /app

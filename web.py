@@ -11,7 +11,7 @@ import re
 import statistics
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1116,6 +1116,171 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
                             f"most recently {datetime.fromtimestamp(max(offline), tz).strftime('%b %d %H:%M')}."))
     order = {"warn": 0, "info": 1}
     return [{"level": lvl, "text": t} for lvl, t in sorted(out, key=lambda x: order[x[0]])]
+
+
+# ------------------------------------------------------------ vet report
+
+
+@app.route("/report/<pet_id>.pdf")
+def vet_report(pet_id):
+    import lr_report  # reportlab is only loaded when someone asks for a report
+    tz = local_tz()
+    today = datetime.now(tz).date()
+    try:
+        last = date.fromisoformat(request.args["to"]) if request.args.get("to") else today
+        first = date.fromisoformat(request.args["from"]) if request.args.get("from") else last - timedelta(days=29)
+    except ValueError:
+        abort(400)
+    last = min(last, today)
+    if first > last or (last - first).days > 366:
+        abort(400)
+    pets = load_pets()
+    pet = next((p for p in pets if p["id"] == pet_id), None)
+    if not pet:
+        abort(404)
+    pdf = lr_report.build_pdf(vet_report_data(pet, pets, first, last, tz))
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", pet["name"]).strip("-") or "cat"
+    return Response(pdf, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{slug}-litter-report-{first}-to-{last}.pdf"'})
+
+
+def vet_report_data(pet, pets, first: date, last: date, tz) -> dict:
+    """Everything the vet report shows for one cat over [first, last] (local dates).
+    Usual ranges come from the period plus up to BASELINE_DAYS before it, using robust
+    statistics so the period's own outliers barely move them."""
+    unit = weight_unit()
+    conv = (lambda lb: lb * 0.453592) if unit == "kg" else (lambda lb: lb)
+    fw = lambda lb: f"{conv(lb):.2f} {unit}"
+    when = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%a %-d %b %H:%M")
+    pid = pet["id"]
+    start = datetime.combine(first, datetime.min.time(), tz).timestamp()
+    end = datetime.combine(last + timedelta(days=1), datetime.min.time(), tz).timestamp()
+    refs = reference_weights(pets)
+    active = {p["id"] for p in pets if p["active"]}
+    data_start = db().execute("SELECT MIN(ts) AS ts FROM activities").fetchone()["ts"] or start
+    pool_start = max(start - BASELINE_DAYS * 86400, data_start)
+    pool = sorted((v for v in (annotate(v, refs, active) for v in load_visits(pool_start, end, types=("PET_VISIT",)))
+                   if v["pet"] == pid), key=lambda v: v["ts"])
+    visits = [v for v in pool if v["ts"] >= start]
+
+    days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    didx = {d: i for i, d in enumerate(days)}
+    daily = [{"visits": 0, "urine": 0, "feces": 0, "other": 0, "weights": [], "longest": None} for _ in days]
+    readings = []
+    for v in visits:
+        lt = datetime.fromtimestamp(v["ts"], tz)
+        i = didx.get(lt.date())
+        if i is None:
+            continue
+        row = daily[i]
+        row["visits"] += 1
+        row[{"Urine": "urine", "Feces": "feces"}.get(v["waste_type"], "other")] += 1
+        if v["duration"]:
+            row["longest"] = max(row["longest"] or 0, v["duration"])
+        if v["weight"] and not v["review"]:
+            row["weights"].append(v["weight"])
+            readings.append((i + (lt.hour + lt.minute / 60) / 24 - 0.5, round(conv(v["weight"]), 3)))
+    for row in daily:
+        row["weight"] = round(conv(statistics.median(row["weights"])), 3) if row["weights"] else None
+
+    # the cat's usual: daily visit counts over whole days in the pool
+    d0 = datetime.fromtimestamp(pool_start, tz).date()
+    if datetime.combine(d0, datetime.min.time(), tz).timestamp() < pool_start:
+        d0 += timedelta(days=1)
+    pool_days = [d0 + timedelta(days=i) for i in range((last - d0).days + 1)]
+    counts = Counter(datetime.fromtimestamp(v["ts"], tz).date() for v in pool)
+    day_counts = [counts.get(d, 0) for d in pool_days] or [0]
+    mean, sd = statistics.fmean(day_counts), statistics.pstdev(day_counts)
+    durs = [v["duration"] for v in pool if v["duration"]]
+    dm = statistics.median(durs) if len(durs) >= 8 else None
+    dsp = max(_spread(durs, dm), 0.1 * dm, 5) if dm else None
+    long_over = max(dm + 3 * dsp, 1.5 * dm) if dm else None
+    ws = [v["weight"] for v in pool if v["weight"] and not v["review"]]
+    wm = statistics.median(ws) if len(ws) >= 5 else None
+    wsp = max(_spread(ws, wm), 0.01 * wm) if wm else None
+
+    anomalies = []
+    for d, row in zip(days, daily):
+        if row["visits"] >= 4 and row["visits"] > mean + max(3 * sd, 2):
+            anomalies.append(f"{d:%a %-d %b}: {row['visits']} visits (usually about {mean:.1f} a day).")
+    long_visits = [v for v in visits if long_over and (v["duration"] or 0) > long_over]
+    if long_visits:
+        empty = sum(1 for v in long_visits if v["waste_type"] in NO_WASTE)
+        msg = (f"{len(long_visits)} unusually long visit{'s' if len(long_visits) != 1 else ''} "
+               f"(over {_fmt_dur(long_over)}; typical {_fmt_dur(dm)})")
+        if empty:
+            msg += f", {empty} with no waste detected. Long visits with little output can mean straining"
+        anomalies.append(msg + ". Listed below.")
+    if mean >= 0.7:
+        # a gap counts when it's at least 3× the cat's usual time between visits (and a day)
+        min_gap = max(24, 3 * 24 / mean) * 3600
+        gaps = sorted(((b["ts"] - a["ts"], a["ts"], b["ts"]) for a, b in zip(visits, visits[1:])
+                       if b["ts"] - a["ts"] >= min_gap), reverse=True)
+        if len(gaps) > 3:
+            g, a, b = gaps[0]
+            anomalies.append(f"{len(gaps)} gaps of {min_gap / 3600:.0f}+ hours without a visit; the longest was "
+                             f"{g / 3600:.0f} hours, from {when(a)} to {when(b)}.")
+        else:
+            anomalies += [f"No visits for {g / 3600:.0f} hours, from {when(a)} to {when(b)}." for g, a, b in gaps]
+    if wm:
+        band = max(3 * wsp, 0.04 * wm)
+        off = [(d, row) for d, row in zip(days, daily)
+               if len(row["weights"]) >= 2 and abs(statistics.median(row["weights"]) - wm) > band]
+        if off:
+            shown = ", ".join(f"{d:%-d %b} ({row['weight']:.2f})" for d, row in off[:6])
+            anomalies.append(f"Daily weight outside the usual {fw(wm - band)}–{fw(wm + band)} on {len(off)} "
+                             f"day{'s' if len(off) != 1 else ''}: {shown}{'…' if len(off) > 6 else ''}.")
+    wk = 7 * 86400
+    early = [v["weight"] for v in visits if v["weight"] and not v["review"] and v["ts"] < start + wk]
+    late = [v["weight"] for v in visits if v["weight"] and not v["review"] and v["ts"] >= end - wk]
+    change = None
+    if len(early) >= 3 and len(late) >= 3 and len(days) >= 14:
+        e, l = statistics.median(early), statistics.median(late)
+        change = (l - e, 100 * (l - e) / e)
+        if abs(change[1]) >= 5:
+            anomalies.append(f"Weight changed {conv(change[0]):+.2f} {unit} ({change[1]:+.1f}%) "
+                             f"from the first week to the last.")
+    # longest run of days without a stool visit, if the cat normally has them
+    gap, run, run_end = 0, 0, None
+    stool_days = {datetime.fromtimestamp(v["ts"], tz).date() for v in pool if v["waste_type"] == "Feces"}
+    for d in days:
+        run = 0 if d in stool_days else run + 1
+        if run > gap:
+            gap, run_end = run, d
+    if stool_days and gap >= 3:
+        anomalies.append(f"No stool visits for {gap} days in a row "
+                         f"({run_end - timedelta(days=gap - 1):%-d %b}–{run_end:%-d %b}).")
+
+    n = len(visits)
+    tot = Counter({"urine": 0, "feces": 0, "other": 0})
+    for row in daily:
+        tot.update({k: row[k] for k in ("urine", "feces", "other")})
+    pct = lambda k: f"{100 * tot[k] / n:.0f}%" if n else "—"
+    photo = db().execute("SELECT photo_file FROM pets WHERE pet_id = ?", (pid,)).fetchone()
+    return {
+        "name": pet["name"], "unit": unit, "tz": str(tz), "start": first, "end": last, "days": days,
+        "generated": datetime.now(tz),
+        "photo": str(lr_db.photo_dir() / photo["photo_file"]) if photo and photo["photo_file"] else None,
+        "summary": {
+            "visits": n, "per_day": n / len(days),
+            "usual_visits": f"about {mean:.1f} a day",
+            "waste_split": f"{pct('urine')} / {pct('feces')} / {pct('other')}",
+            "stool_gap": f"{gap} day{'s' if gap != 1 else ''}" if stool_days else "no stool visits recorded",
+            "median_duration": _median([v["duration"] for v in visits if v["duration"]]),
+            "usual_duration": f"{_fmt_dur(max(0, dm - 2 * dsp))}–{_fmt_dur(dm + 2 * dsp)}" if dm else "not enough data",
+            "weight_first": fw(statistics.median(early)) if len(early) >= 3 else "—",
+            "weight_last": fw(statistics.median(late)) if len(late) >= 3 else "—",
+            "weight_change": f"{conv(change[0]):+.2f} {unit} ({change[1]:+.1f}%)" if change else "not enough data",
+            "usual_weight": f"{fw(wm - 2 * wsp)}–{fw(wm + 2 * wsp)}" if wm else "not enough data",
+        },
+        "daily": daily, "daily_weight": [row["weight"] for row in daily], "weight_readings": readings,
+        "weight_band": (conv(wm - 2 * wsp), conv(wm + 2 * wsp)) if wm else None,
+        "anomalies": anomalies,
+        "long_over": long_over, "typical": dm,
+        "long_visits": [{"when": when(v["ts"]), "duration": v["duration"], "waste": v["waste_type"] or None,
+                         "robot": v["robot_name"]} for v in long_visits],
+        "notes": [{"when": when(v["ts"]), "note": v["note"]} for v in visits if v["note"]],
+    }
 
 
 # ------------------------------------------------------------ clips API (calendar page)

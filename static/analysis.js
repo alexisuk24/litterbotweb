@@ -127,7 +127,8 @@ function catCard(p) {
   const split = total ? Object.entries(w).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${esc(t)} ${Math.round(100 * n / total)}%`).join(' · ') : '—';
   const u = usual(k.baseline);
   return `<div class="card cat" style="--c:${color}">
-    <div class="name">${catBadge(p, p.slot, 40)}${esc(p.name)}${p.active ? '' : ' <span class="badge off">inactive</span>'}</div>
+    <div class="name">${catBadge(p, p.slot, 40)}${esc(p.name)}${p.active ? '' : ' <span class="badge off">inactive</span>'}
+      <button class="btn report-btn" data-report="${esc(p.id)}" title="Download a PDF report for your vet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h6"/></svg>Report</button></div>
     <div class="stats">
       <div class="stat"><div class="k">Visits / day</div><div class="v">${k.per_day ?? 0}</div><div class="d">${trend}</div>${u.visits}</div>
       <div class="stat"><div class="k">Weight</div><div class="v">${fmtW(k.weight)}</div><div class="d">${wch}</div>${u.weight}</div>
@@ -311,6 +312,31 @@ el('range').addEventListener('click', e => {
   s.days = v; store.set('lr-range', v); load();
 });
 el('robot').addEventListener('change', e => { s.robot = e.target.value; load(); });
+
+// vet report: pick a date range, then the browser downloads the PDF
+const isoDay = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+el('root').addEventListener('click', e => {
+  const b = e.target.closest('[data-report]');
+  if (!b) return;
+  const p = s.data.pets.find(x => x.id === b.dataset.report);
+  const today = new Date();
+  const from = new Date(today);
+  from.setDate(from.getDate() - 29);
+  s.reportPet = p.id;
+  el('reportTitle').textContent = `Vet report for ${p.name}`;
+  el('reportFrom').value = isoDay(from);
+  el('reportTo').value = el('reportTo').max = el('reportFrom').max = isoDay(today);
+  el('reportTo').min = el('reportFrom').value;
+  el('report').returnValue = '';
+  el('report').showModal();
+});
+el('report').addEventListener('close', () => {
+  if (el('report').returnValue !== 'ok') return;
+  const q = new URLSearchParams({ from: el('reportFrom').value, to: el('reportTo').value });
+  location.href = `/report/${encodeURIComponent(s.reportPet)}.pdf?${q}`;
+});
+el('report').addEventListener('click', e => { if (e.target === el('report')) el('report').close(); });
+el('reportFrom').addEventListener('change', () => { el('reportTo').min = el('reportFrom').value; });
 window.addEventListener('lr-synced', load);
 
 (async function init() {

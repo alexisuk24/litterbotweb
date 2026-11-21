@@ -34,6 +34,10 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   the last 7 days fall outside it, when a cat visits far more often than usual in 24 hours,
   and when it has several unusually long visits (noting those with no waste detected,
   which can mean straining).
+  **Report** on a cat card downloads a PDF for your vet over a date range you pick: a
+  summary against the cat's usual ranges, the weight trend, visits per day split by urine
+  and stool, anything unusual (long visits, bursts of visits, long gaps, stretches without
+  stool, weight outside the usual range), a day-by-day table and your notes on visits.
 
 Analysis uses your corrections.
 
@@ -79,7 +83,7 @@ already reverse-engineered the LR5 Pro camera APIs.
 ## Run it
 
 ```bash
-pip install "pylitterbot>=2025.9.0"     # ffmpeg must be on PATH
+pip install "pylitterbot>=2025.9.0" flask aiohttp reportlab   # ffmpeg must be on PATH
 export LR_USERNAME=you@example.com LR_PASSWORD=...
 python lr_clips.py --dump ./api-dump    # first: look at what the API returns
 python lr_clips.py --out ./clips        # then: download the last 7 days

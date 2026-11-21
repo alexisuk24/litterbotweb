@@ -39,6 +39,12 @@
 .cat .stat .usual { color: var(--muted); }
 .cat .stat .usual.off { color: var(--warn); }
 .cat .usual-note { font-size: .75rem; margin-top: .35rem; }
+.cat .report-btn { margin-left: auto; display: inline-flex; align-items: center; gap: .35rem; font-size: .78rem; font-weight: 500; padding: .3rem .6rem; }
+.cat .report-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.confirm .dates { display: flex; gap: .75rem; flex-wrap: wrap; }
+.confirm label { display: grid; gap: .25rem; font-size: .78rem; color: var(--muted); }
+.confirm input[type=date] { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .4rem .55rem; color-scheme: dark; }
+.btn.go { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .heat { margin-top: .75rem; overflow-x: auto; }
 .heat table { border-collapse: separate; border-spacing: 2px; font-size: .68rem; color: var(--muted); }
@@ -67,6 +73,17 @@ table.mix td.n { text-align: right; font-variant-numeric: tabular-nums; }
   </div>
   <div id="root"><div class="empty">Loading…</div></div>
 </div>
+<dialog class="confirm" id="report" aria-labelledby="reportTitle">
+  <form method="dialog" id="reportForm">
+    <h3 id="reportTitle">Vet report</h3>
+    <p>A PDF for this cat: weight trend, visits per day, urine/stool split, anything outside the cat's usual range, and a day-by-day table.</p>
+    <div class="dates">
+      <label>From<input type="date" id="reportFrom" required></label>
+      <label>To<input type="date" id="reportTo" required></label>
+    </div>
+    <div class="btns"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn go" value="ok">Download PDF</button></div>
+  </form>
+</dialog>
 <script src="{{ asset('vendor/chart.umd.min.js') }}"></script>
 <script src="{{ asset('common.js') }}"></script>
 <script src="{{ asset('analysis.js') }}"></script>
