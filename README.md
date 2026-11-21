@@ -92,13 +92,18 @@ and log files in `/data/logs`).
 The container runs as uid/gid 1000, so both host folders must be owned by it
 (`sudo chown -R 1000:1000 <folder>`); it exits with that hint if they aren't.
 
-Publishing the image (with the SBOM and provenance attestations Docker Scout checks for):
+Publishing the image (with the SBOM and provenance attestations Docker Scout checks for).
+`latest` includes the VAAPI drivers for both Intel (`intel`) and AMD (`mesa`) GPUs:
 
 ```bash
 docker buildx build --pull --platform linux/amd64 \
   --provenance=mode=max --sbom=true \
   -t alexisuk24/lr_video_downloader:latest --push .
 ```
+
+For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DRIVERS=intel`
+(amd64 only) or `VA_DRIVERS=mesa` (AMD), or use `VA_DRIVERS=""` for no hardware encoding
+(clips that switch cameras are re-encoded on the CPU). The default is `"intel mesa"`.
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -108,6 +113,7 @@ docker buildx build --pull --platform linux/amd64 \
 | `MATCH_BEFORE_S` / `MATCH_AFTER_S` | 600 / 180 | How far before/after a visit a clip still counts as that visit's clip |
 | `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything) |
 | `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
+| `LR_WEB` | 1 | Serve the web UI on port 2287 from the collector's process (`0` = collector only; run `python web.py` separately) |
 | `DB_PATH` | /data/litterrobot.db | Database location |
 | `LOG_DIR` | /data/logs | Where `sync.log` and `web.log` are written (1 MB each, 3 rotated copies kept) |
 

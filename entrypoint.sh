@@ -6,5 +6,4 @@ for d in /clips /data; do
         exit 1
     fi
 done
-python /app/web.py &
 exec python /app/lr_clips.py --out /clips --days 7

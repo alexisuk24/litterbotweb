@@ -28,7 +28,7 @@ def photo_dir(db_path: Path | str | None = None) -> Path:
     return Path(db_path or DB_PATH).parent / "pet-photos"
 
 
-# Each process writes its own file so rotation never races between them.
+# The collector and the web UI each write their own file.
 LOG_DIR = Path(os.environ.get("LOG_DIR", DB_PATH.parent / "logs"))
 LOG_FILES = {"sync": "sync.log", "web": "web.log"}
 LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
@@ -40,6 +40,22 @@ def log_file_handler(source: str) -> logging.Handler:
                                   encoding="utf-8")
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     return handler
+
+
+# When the web UI runs inside the collector's process, the collector registers a
+# callback here so a queued request wakes it at once instead of waiting for its
+# next look at the database. Call wake() only after committing the request.
+_waker = None
+
+
+def set_waker(fn) -> None:
+    global _waker
+    _waker = fn
+
+
+def wake() -> None:
+    if _waker:
+        _waker()
 
 # Sentinel stored in visit_overrides.pet_id for "not one of my cats / can't tell".
 UNKNOWN_PET = "__unknown__"

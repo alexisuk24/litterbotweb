@@ -198,6 +198,7 @@ def api_robot_command(serial):
         return jsonify(reason="in_progress", command=_command_json(busy)), 409
     cid = lr_db.enqueue_command(conn, serial, command)
     conn.commit()
+    lr_db.wake()
     return jsonify(command=_command_json(conn.execute("SELECT * FROM robot_commands WHERE id = ?", (cid,)).fetchone())), 202
 
 
@@ -334,6 +335,7 @@ def api_sync():
         return jsonify(reason=reason, **st), 429 if reason == "cooldown" else 409
     lr_db.set_state(conn, "refresh_requested", str(time.time()))
     conn.commit()
+    lr_db.wake()
     return jsonify(sync_status()), 202
 
 
@@ -501,6 +503,7 @@ def api_download_clip(clip_id):
         return jsonify(reason="in_progress", download=lr_db.clip_download_status(conn, [clip_id]).get(str(clip_id))), 409
     lr_db.enqueue_command(conn, c["serial"], "redownload", str(clip_id))
     conn.commit()
+    lr_db.wake()
     return jsonify(download=lr_db.clip_download_status(conn, [clip_id]).get(str(clip_id))), 202
 
 
@@ -691,6 +694,7 @@ def api_override(event_id):
             and (push_to != whisker_pet or lr_db.latest_push(conn, event_id))):
         lr_db.enqueue_push(conn, event_id, push_to)
     conn.commit()
+    lr_db.wake()
     return jsonify(event=_one_event(event_id))
 
 
@@ -705,6 +709,7 @@ def api_retry_push(event_id):
         return jsonify(reason="too_old", event=v), 409
     lr_db.enqueue_push(conn, event_id, v["pet"])
     conn.commit()
+    lr_db.wake()
     return jsonify(event=_one_event(event_id))
 
 
@@ -1079,12 +1084,21 @@ def serve_video(robot, filename):
     return Response(stream(), status=206, headers=headers, direct_passthrough=True)
 
 
-if __name__ == "__main__":
+# Loggers whose records go to web.log rather than the collector's sync.log.
+LOGGERS = ("werkzeug", app.logger.name, lr_live.LOG.name)
+
+
+def serve() -> None:
     # Warnings and errors only; per-request lines still go to the console.
     try:
         handler = lr_db.log_file_handler("web")
         handler.setLevel(logging.WARNING)
-        logging.getLogger().addHandler(handler)
+        for name in LOGGERS:
+            logging.getLogger(name).addHandler(handler)
     except OSError as err:
         print(f"Not writing a web log file: {err}", flush=True)
     app.run(host="0.0.0.0", port=2287, debug=False, threaded=True)
+
+
+if __name__ == "__main__":
+    serve()

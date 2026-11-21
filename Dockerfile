@@ -36,11 +36,16 @@ RUN mkdir /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-comp
 # ---- app image
 FROM python:3.15-slim
 
-RUN apt-get update \
+# VAAPI drivers to include: any of "intel mesa" (intel is amd64-only; mesa covers
+# AMD), or "" for CPU-only encoding. libva itself always stays: ffmpeg links it.
+ARG VA_DRIVERS="intel mesa"
+RUN pkgs="" \
+    && case " $VA_DRIVERS " in *" mesa "*) pkgs="$pkgs mesa-va-drivers";; esac \
+    && case " $VA_DRIVERS " in *" intel "*) if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+        pkgs="$pkgs intel-media-va-driver i965-va-driver"; fi;; esac \
+    && apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends tzdata libx264-164 libva2 libva-drm2 libdrm2 mesa-va-drivers \
-    && if [ "$(dpkg --print-architecture)" = amd64 ]; then \
-        apt-get install -y --no-install-recommends intel-media-va-driver i965-va-driver; fi \
+    && apt-get install -y --no-install-recommends tzdata libx264-164 libva2 libva-drm2 libdrm2 $pkgs \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 

@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -561,15 +562,26 @@ async def main() -> int:
     p.add_argument("--retention-grace-hours", type=float,
         default=float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24")),
         help="wait this long after retention is first enabled before deleting (default 24); env: LR_RETENTION_GRACE_HOURS")
+    p.add_argument("--web", action=argparse.BooleanOptionalAction,
+        default=os.environ.get("LR_WEB", "1") != "0",
+        help="also serve the web UI on port 2287 from this process (default on); env: LR_WEB")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
+    if args.dump:
+        args.web = False
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format=lr_db.LOG_FORMAT,
     )
+    web = None
+    if args.web:
+        import web  # Flask is only loaded when the UI runs here
     try:
-        logging.getLogger().addHandler(lr_db.log_file_handler("sync"))
+        handler = lr_db.log_file_handler("sync")
+        if web:
+            handler.addFilter(lambda r: r.name.split(".")[0] not in web.LOGGERS)
+        logging.getLogger().addHandler(handler)
     except OSError as err:
         LOG.warning("Not writing a log file (Settings > Logs will be empty): %s", err)
     for var in ("LR_USERNAME", "LR_PASSWORD"):
@@ -595,8 +607,17 @@ async def main() -> int:
                "WHERE status IN ('pending', 'sending')", (time.time(),))
     db.commit()
 
+    # One wake-up event per waiting loop, so both notice a web UI request.
+    sync_wake = outbox_wake = None
+    if web:
+        sync_wake, outbox_wake = asyncio.Event(), asyncio.Event()
+        loop = asyncio.get_running_loop()
+        lr_db.set_waker(lambda: (loop.call_soon_threadsafe(sync_wake.set),
+                                 loop.call_soon_threadsafe(outbox_wake.set)))
+        threading.Thread(target=serve_web, args=(web,), name="web", daemon=True).start()
+
     account = Account()
-    worker = None if args.dump else asyncio.create_task(outbox_worker(args, account))
+    worker = None if args.dump else asyncio.create_task(outbox_worker(args, account, outbox_wake))
     last_update_check: datetime | None = None
     trigger = "startup"
     try:
@@ -624,9 +645,10 @@ async def main() -> int:
             lr_db.set_state(db, "sync_finished", str(time.time()))
             lr_db.set_state(db, "sync_running", "0")
             db.commit()
+            lr_db.wake()  # requests queued before the first login can be sent now
             if not args.interval:
                 return 1 if error else 0
-            trigger = await wait_for_next_run(db, args.interval)
+            trigger = await wait_for_next_run(db, args.interval, sync_wake)
     finally:
         if worker:
             worker.cancel()
@@ -781,7 +803,7 @@ async def run_commands(db, account: Account, args: argparse.Namespace) -> None:
                 LOG.info("%s: %s sent", c["robot_serial"], c["command"])
 
 
-async def outbox_worker(args: argparse.Namespace, account: Account) -> None:
+async def outbox_worker(args: argparse.Namespace, account: Account, wake: asyncio.Event | None) -> None:
     """Background loop that acts on requests from the web UI (robot commands, clip
     re-downloads and Whisker cat corrections) within a couple of seconds, even mid-sync."""
     db = lr_db.connect(args.db)
@@ -795,10 +817,10 @@ async def outbox_worker(args: argparse.Namespace, account: Account) -> None:
             raise
         except Exception:
             LOG.exception("handling web UI requests failed")
-        await asyncio.sleep(1.5)
+        await wait_for_wake(wake, 60, poll=1.5)
 
 
-async def wait_for_next_run(db, interval: int) -> str:
+async def wait_for_next_run(db, interval: int, wake: asyncio.Event | None) -> str:
     """Sleep until the next scheduled run, waking early for a manual refresh from the web UI."""
     deadline = time.monotonic() + interval
     while time.monotonic() < deadline:
@@ -806,8 +828,29 @@ async def wait_for_next_run(db, interval: int) -> str:
         if requested > float(lr_db.get_state(db, "sync_started") or 0):
             LOG.info("Manual refresh requested")
             return "manual"
-        await asyncio.sleep(min(2, max(0.1, deadline - time.monotonic())))
+        await wait_for_wake(wake, max(0.1, deadline - time.monotonic()), poll=2)
     return "scheduled"
+
+
+async def wait_for_wake(wake: asyncio.Event | None, timeout: float, poll: float) -> None:
+    """Sleep until the in-process web UI queues something, or for at most timeout.
+    Without the UI in this process nothing can wake us, so check back every poll seconds."""
+    if wake is None:
+        await asyncio.sleep(min(poll, timeout))
+        return
+    try:
+        await asyncio.wait_for(wake.wait(), timeout)
+    except TimeoutError:
+        pass
+    wake.clear()  # the caller re-reads the database next, so nothing set before this is missed
+
+
+def serve_web(web) -> None:
+    try:
+        web.serve()
+    except BaseException:
+        LOG.exception("Web UI stopped")
+        os._exit(1)  # let the container restart rather than run on without a UI
 
 
 if __name__ == "__main__":
