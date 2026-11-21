@@ -19,9 +19,7 @@ jobs:
       - uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          # Updating the description needs a Read, Write & Delete token; the publish token
-          # (DOCKERHUB_TOKEN) is kept to Read & Write.
-          password: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}  # needs Read, Write & Delete
           repository: alexisuk24/lr_video_downloader
           readme-filepath: docs/docker.md
           short-description: ${{ github.event.repository.description }}
