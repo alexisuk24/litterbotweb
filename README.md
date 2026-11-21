@@ -213,8 +213,19 @@ and log files in `/data/logs`).
 The container runs as uid/gid 1000, so both host folders must be owned by it
 (`sudo chown -R 1000:1000 <folder>`); it exits with that hint if they aren't.
 
-Publishing the image (with the SBOM and provenance attestations Docker Scout checks for).
-`latest` includes the VAAPI drivers for both Intel (`intel`) and AMD (`mesa`) GPUs:
+Releases: feature branches are merged into `develop` by PR, and each merge publishes a
+build of the next release (`0.3.0-dev.52`, plus a moving `develop` tag) to Docker Hub.
+To release, open a PR from `develop` to `main` and merge it with a merge commit (not
+squash, or the two branches' histories split). That publishes `0.3.0`, `0.3` and `latest`,
+and tags the commit `v0.3.0`. The version comes from `VERSION`, which holds only
+major.minor: raise it (in the release PR or earlier on `develop`) for a minor or major
+release, or leave it for a patch release (`0.3.1`, `0.3.2`, ...). Hotfixes go from a branch
+off `main` straight to `main`; merge `main` back into `develop` afterwards. The workflow
+needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repo secrets; the running version is
+in the image's `APP_VERSION` env var and `org.opencontainers.image.version` label.
+
+Publishing the image by hand (with the SBOM and provenance attestations Docker Scout
+checks for). `latest` includes the VAAPI drivers for both Intel (`intel`) and AMD (`mesa`) GPUs:
 
 ```bash
 docker buildx build --pull --platform linux/amd64 \

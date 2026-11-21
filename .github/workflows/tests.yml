@@ -2,7 +2,9 @@ name: Tests
 
 on:
   push:
+    branches-ignore: [develop, main]  # tested by docker.yml before publishing
   pull_request:
+  workflow_call:
 
 jobs:
   test:
