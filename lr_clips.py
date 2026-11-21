@@ -455,9 +455,12 @@ async def save_pet_photo(db, http: aiohttp.ClientSession, photos: Path, pet_id: 
         ext = lr_db.PHOTO_TYPES.get(resp.content_type)
         if not ext:
             raise RuntimeError(f"unexpected content type {resp.content_type}")
-        data = await resp.content.read(15 * 1024 * 1024 + 1)
-    if len(data) > 15 * 1024 * 1024:
-        raise RuntimeError("photo larger than 15 MB")
+        # StreamReader.read(n) returns whatever has arrived so far, so read until EOF
+        data = b""
+        while chunk := await resp.content.read(15 * 1024 * 1024 + 1 - len(data)):
+            data += chunk
+            if len(data) > 15 * 1024 * 1024:
+                raise RuntimeError("photo larger than 15 MB")
     photos.mkdir(parents=True, exist_ok=True)
     name = f"{slug(pet_id)}{ext}"
     for old in photos.glob(f"{slug(pet_id)}.*"):

@@ -351,11 +351,21 @@ def load_pets():
     return [
         {"id": r["pet_id"], "name": r["name"], "slot": i, "active": bool(r["is_active"]),
          "profile_weight": r["last_weight_reading"] or r["weight"],
-         # the version param changes when the photo does, so browsers can cache it for long
-         "image": (url_for("pet_photo", pet_id=r["pet_id"], v=hashlib.sha1(r["photo_key"].encode()).hexdigest()[:10])
-                   if r["photo_file"] else None)}
+         "image": _pet_photo_url(r)}
         for i, r in enumerate(rows)
     ]
+
+
+def _pet_photo_url(r) -> str | None:
+    if not r["photo_file"]:
+        return None
+    try:
+        mtime = (lr_db.photo_dir() / r["photo_file"]).stat().st_mtime_ns
+    except OSError:
+        return None
+    # the version param changes whenever the file is rewritten, so browsers can cache it for long
+    v = hashlib.sha1(f"{r['photo_key']}:{mtime}".encode()).hexdigest()[:10]
+    return url_for("pet_photo", pet_id=r["pet_id"], v=v)
 
 
 @app.route("/pet-photo/<pet_id>")

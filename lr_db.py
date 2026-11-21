@@ -216,6 +216,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "photo_file" not in cols:
         conn.execute("ALTER TABLE pets ADD COLUMN photo_file TEXT")
         conn.execute("ALTER TABLE pets ADD COLUMN photo_key TEXT")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        # photos were saved truncated (only the first network chunk); forget them so they're fetched again
+        conn.execute("UPDATE pets SET photo_key = NULL, photo_file = NULL")
+        conn.execute("PRAGMA user_version = 1")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(robots)")}
     if "info" not in cols:
         conn.execute("ALTER TABLE robots ADD COLUMN info TEXT")
