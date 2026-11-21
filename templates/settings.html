@@ -52,6 +52,9 @@
 .lead { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; font-size: .85rem; color: var(--text2); }
 .lead select { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .3rem .5rem; }
 .status.ok { color: var(--teal); }
+/* segmented controls and pickers keep their size; on phones they go under the description */
+.row .seg { flex-shrink: 0; }
+@media (max-width: 600px) { .row.stack { flex-direction: column; gap: .75rem; } }
 select.pick { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .4rem .55rem; font-size: .88rem; flex-shrink: 0; }
 code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; }
 </style>
@@ -62,7 +65,7 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
   <div class="settings">
     <div class="card">
       <h2>Whisker app</h2>
-      <div class="row">
+      <div class="row stack">
         <div>
           <div class="label" id="intervalLabel">Sync schedule</div>
           <div class="desc">How often activity, clips and robot status are fetched from Whisker; notifications are
@@ -82,7 +85,7 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
         </div>
         <label class="switch"><input type="checkbox" id="wbToggle" role="switch" aria-labelledby="wbLabel" disabled><span class="track"></span></label>
       </div>
-      <div class="row">
+      <div class="row stack">
         <div>
           <div class="label" id="tzLabel">Clip list timezone</div>
           <div class="desc">The timezone sent when asking Whisker for clips; dates are read as days in it.
@@ -138,7 +141,7 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
 
     <div class="card">
       <h2>Display</h2>
-      <div class="row">
+      <div class="row stack">
         <div>
           <div class="label" id="unitLabel">Weight unit</div>
           <div class="desc">Used for cat weights, charts and insights everywhere in the app.</div>
