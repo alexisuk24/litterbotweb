@@ -813,10 +813,15 @@ def api_settings():
         conn.commit()
         if wake_collector:
             lr_db.wake()  # so a waiting collector picks up the new interval now
-    pending = conn.execute("SELECT COUNT(*) AS n FROM whisker_pushes WHERE status IN ('pending', 'sending')").fetchone()["n"]
+    # only visits Whisker still accepts changes to; older ones can't be retried anyway
+    editable = time.time() - lr_db.WHISKER_EDIT_WINDOW_S
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM whisker_pushes p JOIN activities a ON a.id = p.activity_id "
+        "WHERE p.status IN ('pending', 'sending') AND a.ts >= ?", (editable,)).fetchone()["n"]
     failed = conn.execute(
-        "SELECT COUNT(*) AS n FROM whisker_pushes p WHERE status = 'error' AND id = "
-        "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)").fetchone()["n"]
+        "SELECT COUNT(*) AS n FROM whisker_pushes p JOIN activities a ON a.id = p.activity_id "
+        "WHERE p.status = 'error' AND a.ts >= ? AND p.id = "
+        "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)", (editable,)).fetchone()["n"]
     return jsonify(writeback=lr_db.writeback_enabled(conn), unit=weight_unit(), pending=pending, failed=failed,
                    retention=retention_info(), clip_tz=lr_db.clip_list_tz(conn),
                    server_tz=local_timezone_name(), notify=_notify_settings(conn),
