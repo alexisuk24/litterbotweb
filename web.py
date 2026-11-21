@@ -5,21 +5,25 @@ import bisect
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import statistics
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
                    send_file, url_for)
+from markupsafe import escape
 
 from pylitterbot.camera import local_timezone_name
 
+import lr_auth
 import lr_db
+import lr_iq
 import lr_live
 
 app = Flask(__name__)
@@ -75,7 +79,39 @@ def fmt_weight(lb: float, unit: str, signed: bool = False) -> str:
 
 @app.context_processor
 def _inject_unit():
-    return {"weight_unit": weight_unit()}
+    return {"weight_unit": weight_unit(), "user": g.get("user") or lr_auth.User(None, "admin")}
+
+
+@app.before_request
+def _check_access():
+    """Who's asking (lr_auth) and whether they may: Viewers can look but not change anything."""
+    if request.path == "/api/health":  # Docker and uptime monitors carry no identity
+        return None
+    try:
+        g.user = lr_auth.identify(request.headers)
+    except lr_auth.Denied as d:
+        lr_auth.log_refusal(None, d.status, d.message, request.method, request.path,
+                            request.headers, request.remote_addr)
+        return _refuse(d.status, d.message)
+    if lr_auth.HEADER and g.user.email is None:  # admin only because it bypassed Cloudflare
+        lr_auth.note_direct(request.remote_addr)
+    lr_auth.log_access(g.user, request.headers, request.remote_addr)
+    if not lr_auth.allowed(g.user, request.method, request.path):
+        message = "Your account can view this app but not change anything. Ask an admin."
+        lr_auth.log_refusal(g.user, 403, "Viewers can't do this", request.method, request.path,
+                            request.headers, request.remote_addr)
+        return _refuse(403, message)
+    return None
+
+
+def _refuse(status: int, message: str):
+    if request.path.startswith("/api/") or request.method != "GET":
+        return jsonify(error=message), status
+    return Response(f"<!doctype html><meta name=viewport content='width=device-width'>"
+                    f"<body style='font-family:system-ui;background:#0f1117;color:#e2e8f0;padding:2rem'>"
+                    f"<h1 style='font-size:1.2rem'>Litter Robot</h1><p>{escape(message)}</p>"
+                    f"<p><a href='/robots' style='color:#b3a8ff'>Back to the app</a></p>",
+                    status=status, mimetype="text/html")
 
 
 @app.after_request
@@ -103,7 +139,7 @@ def asset(path: str) -> str:
 def index():
     if request.args.get("robot"):  # old share links pointed at the clips page on /
         return redirect(url_for("clips_page", **request.args))
-    return redirect(url_for("events_page"))
+    return redirect(url_for("robots_page"))
 
 
 @app.route("/clips")
@@ -116,9 +152,14 @@ def events_page():
     return render_template("events.html", page="events")
 
 
+@app.route("/cats")
+def cats_page():
+    return render_template("analysis.html", page="cats")
+
+
 @app.route("/analysis")
-def analysis_page():
-    return render_template("analysis.html", page="analysis")
+def analysis_page():  # the Cats page's old address
+    return redirect(url_for("cats_page", **request.args))
 
 
 @app.route("/settings")
@@ -175,7 +216,7 @@ def api_robot(serial):
         info=json.loads(r["info"]) if r["info"] else None, info_at=r["info_at"],
         clips_stale=json.loads(lr_db.get_state(conn, f"clips_stale:{serial}") or "null"),
         last_24h={"visits": counts.get("PET_VISIT", 0), "cycles": counts.get("CYCLE_COMPLETED", 0)},
-        last_visit=last_visit, recent=recent, latest=latest,
+        last_visit=last_visit, recent=recent, latest=latest, iq=lr_iq.forecasts(conn, serial),
         history=[c for c in commands if c["command"] != "refresh"][:6],
         firmware=[{"component": f["component"], "version": f["version"], "previous": f["previous"],
                    "at": f["seen_at"]} for f in conn.execute(
@@ -222,7 +263,7 @@ def api_live_start(serial):
     if not db().execute("SELECT 1 FROM robots WHERE serial = ? AND camera_device_id IS NOT NULL",
                         (serial,)).fetchone():
         abort(404)
-    return jsonify(_live(lr_live.start(serial)))
+    return jsonify(_live(lr_live.start(serial, lr_auth.who(g.user, request.headers, request.remote_addr))))
 
 
 @app.route("/api/live/<serial>/view", methods=["POST"])
@@ -254,7 +295,7 @@ def api_live_candidates(sid):
 
 @app.route("/api/live/session/<sid>/close", methods=["POST"])
 def api_live_close(sid):
-    _live(lr_live.close(sid))
+    _live(lr_live.close(sid, lr_live.END_REASONS.get(request.args.get("reason"), "closed")))
     return jsonify(ok=True)
 
 
@@ -263,7 +304,7 @@ def manifest():
     icon = lambda f, size, purpose="any": {"src": asset(f"icons/{f}"), "sizes": size, "type": "image/png",
                                            "purpose": purpose}
     resp = jsonify({
-        "name": "Litter Robot", "short_name": "Litter Robot", "id": "/", "start_url": "/events", "scope": "/",
+        "name": "Litter Robot", "short_name": "Litter Robot", "id": "/", "start_url": "/robots", "scope": "/",
         "display": "standalone", "background_color": "#0f1117", "theme_color": "#1a1d27",
         "icons": [icon("icon-192.png", "192x192"), icon("icon-512.png", "512x512"),
                   icon("icon-maskable-512.png", "512x512", "maskable")],
@@ -301,10 +342,15 @@ def _fstate(key):
 
 
 def retention_info():
-    days = int(_fstate("retention_days"))
-    enabled = _fstate("retention_enabled_at")
-    grace = float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24"))
-    return {"days": days, "starts_at": enabled + grace * 3600 if days and enabled else None}
+    if "retention" not in g:  # asked once per clip on the clip lists
+        days, small = lr_db.retention_tiers(db())
+        enabled = _fstate("retention_enabled_at")
+        grace = float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24"))
+        g.retention = {"days": days, "small": small,
+                       "small_setting": lr_db.get_state(db(), "retention_small") or "none",
+                       "starts_at": enabled + grace * 3600 if days and enabled else None,
+                       "minimum": int(_fstate("retention_min_days"))}
+    return g.retention
 
 
 def sync_status():
@@ -320,6 +366,31 @@ def sync_status():
         "cooldown": round(cooldown, 2), "can_refresh": not running and not pending and cooldown == 0,
         "collector_seen": bool(started), "retention": retention_info(), "now": now,
     }
+
+
+@app.route("/api/health")
+def api_health():
+    """For Docker's HEALTHCHECK: 200 when the web server answers, the database opens and the
+    collector's sync loop isn't stuck; 503 with the reason otherwise. A sync that failed
+    (e.g. Whisker is down) still counts as healthy, since a restart wouldn't fix it; its
+    error is included for `docker inspect`."""
+    now = time.time()
+    try:
+        conn = db()
+        conn.execute("SELECT 1").fetchone()
+    except Exception as err:
+        return jsonify(ok=False, problem=f"database: {err}"), 503
+    started, finished = _fstate("sync_started"), _fstate("sync_finished")
+    running = lr_db.get_state(conn, "sync_running") == "1"
+    interval = lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
+    problem = None
+    if running and now - started > STALE_RUN_S:
+        problem = f"a sync has been running for {(now - started) / 3600:.1f} hours"
+    elif not running and finished and now - finished > 3 * interval + 600:
+        problem = f"no sync has run for {(now - finished) / 3600:.1f} hours (schedule: every {interval // 60} min)"
+    body = {"ok": problem is None, "problem": problem, "sync_running": running,
+            "last_sync": finished or None, "last_error": lr_db.get_state(conn, "sync_error") or None}
+    return jsonify(body), 200 if problem is None else 503
 
 
 @app.route("/api/sync", methods=["GET", "POST"])
@@ -351,11 +422,21 @@ def load_pets():
     return [
         {"id": r["pet_id"], "name": r["name"], "slot": i, "active": bool(r["is_active"]),
          "profile_weight": r["last_weight_reading"] or r["weight"],
-         # the version param changes when the photo does, so browsers can cache it for long
-         "image": (url_for("pet_photo", pet_id=r["pet_id"], v=hashlib.sha1(r["photo_key"].encode()).hexdigest()[:10])
-                   if r["photo_file"] else None)}
+         "image": _pet_photo_url(r)}
         for i, r in enumerate(rows)
     ]
+
+
+def _pet_photo_url(r) -> str | None:
+    if not r["photo_file"]:
+        return None
+    try:
+        mtime = (lr_db.photo_dir() / r["photo_file"]).stat().st_mtime_ns
+    except OSError:
+        return None
+    # the version param changes whenever the file is rewritten, so browsers can cache it for long
+    v = hashlib.sha1(f"{r['photo_key']}:{mtime}".encode()).hexdigest()[:10]
+    return url_for("pet_photo", pet_id=r["pet_id"], v=v)
 
 
 @app.route("/pet-photo/<pet_id>")
@@ -393,6 +474,7 @@ def load_visits(start: float | None = None, end: float | None = None, robot: str
         robot_pet = lr_db.first_pet(r["original_pet_ids"] or r["pet_ids"])
         pet = r["o_pet"] or whisker_pet
         pet = None if pet == lr_db.UNKNOWN_PET else pet
+        manual_cat = r["o_pet"] not in (None, lr_db.UNKNOWN_PET)
         out.append({
             "id": r["id"], "ts": r["ts"], "type": r["type"], "subtype": r["subtype"],
             "robot": r["robot_serial"], "robot_name": r["robot_name"],
@@ -403,8 +485,54 @@ def load_visits(start: float | None = None, end: float | None = None, robot: str
             "corrected": r["type"] == "PET_VISIT" and pet != robot_pet,
             "note": r["o_note"] or "",
             "camera_event_ids": json.loads(r["camera_event_ids"] or "[]"),
+            "manual_cat": manual_cat,
         })
+    mark_ignored(out)
     return out
+
+
+IGNORE_UNDER_LB = 2.6  # lighter than any cat: a scale blip, or something left on the robot
+
+
+def mark_ignored(visits) -> None:
+    """Set each visit's `ignored` reason: 'light' (under IGNORE_UNDER_LB; any cat Whisker
+    assigned is removed there, see queue_ignored_unassigns) or 'no_clip' (no cat and no clip
+    recorded around it). Ignored visits show no cat and are left out of stats, baselines,
+    warnings and reports. A light visit can't be given a cat (api_override refuses); a cat
+    you assign yourself to a no-clip visit makes it count again."""
+    pending = []
+    for v in visits:
+        v["ignored"] = None
+        if v["type"] != "PET_VISIT":
+            continue
+        if v["weight"] is not None and v["weight"] < IGNORE_UNDER_LB:
+            v["ignored"] = "light"
+        elif not v["manual_cat"] and not v["pet"]:
+            pending.append(v)
+    with_clips = _visits_with_clips(pending)
+    for v in pending:
+        if v["id"] not in with_clips:
+            v["ignored"] = "no_clip"
+    for v in visits:
+        if v["ignored"]:
+            v["pet"], v["corrected"] = None, False
+
+
+def queue_ignored_unassigns() -> int:
+    """Ask the collector to remove the cat Whisker assigned to light (ignored) visits, within
+    Whisker's edit window. Each visit is sent once; a failure isn't retried automatically."""
+    conn = db()
+    if not lr_db.writeback_enabled(conn):
+        return 0
+    n = 0
+    for v in load_visits(time.time() - lr_db.WHISKER_EDIT_WINDOW_S, types=("PET_VISIT",)):
+        if v["ignored"] == "light" and v["whisker_pet"] and not lr_db.latest_push(conn, v["id"]):
+            lr_db.enqueue_push(conn, v["id"], None)
+            n += 1
+    conn.commit()
+    if n:
+        lr_db.wake()
+    return n
 
 
 def reference_weights(pets) -> dict[str, float]:
@@ -413,7 +541,7 @@ def reference_weights(pets) -> dict[str, float]:
     since = time.time() - 30 * 86400
     by_pet = defaultdict(list)
     for v in load_visits(start=since):
-        if v["pet"] and v["weight"]:
+        if v["pet"] and v["weight"] and not v["ignored"]:
             by_pet[v["pet"]].append(v["weight"])
     refs = {}
     for p in pets:
@@ -428,7 +556,7 @@ def annotate(v, refs, active_ids):
     """Add a weight-based cat suggestion and a needs-review flag."""
     v["suggested"] = None
     v["review"] = False
-    if v["type"] != "PET_VISIT":
+    if v["type"] != "PET_VISIT" or v.get("ignored"):
         return v
     w = v["weight"]
     if w and refs:
@@ -480,11 +608,19 @@ def clip_json(c, event_ts=None, event_duration=None, camera_ids=(), downloads=No
 
 
 def keep_fields(c):
-    days = retention_info()["days"]
-    return {
-        "keep": bool(c["keep"]), "deleted": bool(c["deleted_at"]),
-        "expires": c["ts"] + days * 86400 if days and not c["keep"] and not c["deleted_at"] else None,
-    }
+    """Keep flag, quality, and what retention does to the clip next (`next`: 'small' when it
+    becomes a small copy, 'picture' when its video goes) and when (`expires`)."""
+    r = retention_info()
+    days, small = r["days"], r["small"]
+    expires = nxt = None
+    if days and not c["keep"] and not c["deleted_at"]:
+        if c["quality"] is None:
+            expires = c["ts"] + days * 86400
+            nxt = "small" if small is not None and (small == 0 or c["ts"] + small * 86400 > expires) else "picture"
+        elif small:
+            expires, nxt = c["ts"] + small * 86400, "picture"
+    return {"keep": bool(c["keep"]), "deleted": bool(c["deleted_at"]), "small": c["quality"] == "small",
+            "expires": expires, "next": nxt}
 
 
 @app.route("/api/clips/<clip_id>/download", methods=["POST"])
@@ -549,7 +685,8 @@ def attach_camera(visits, detail=False):
                                       for d in hits]
 
 
-def attach_clip_summary(visits):
+def _clip_matches(visits):
+    """Yield (visit, the clips recorded around it), including clips whose video retention removed."""
     if not visits:
         return
     lo = min(v["ts"] for v in visits) - MATCH_BEFORE_S - 600
@@ -559,7 +696,15 @@ def attach_clip_summary(visits):
     for v in visits:
         a = bisect.bisect_left(times, v["ts"] - MATCH_BEFORE_S - (v["duration"] or 0))
         b = bisect.bisect_right(times, v["ts"] + MATCH_AFTER_S)
-        matched = [c for c in rows[a:b] if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
+        yield v, [c for c in rows[a:b] if v["robot"] in (None, c["robot_serial"], c["r_serial"])]
+
+
+def _visits_with_clips(visits) -> set:
+    return {v["id"] for v, matched in _clip_matches(visits) if matched}
+
+
+def attach_clip_summary(visits):
+    for v, matched in _clip_matches(visits):
         v["clip_count"] = len(matched)
         best = min(matched, key=lambda c: abs(c["ts"] - (v["ts"] - (v["duration"] or 0))), default=None)
         v["thumb"] = media_url("media", best["robot_folder"], best["thumb_file"]) if best else None
@@ -608,7 +753,7 @@ def api_events():
 
     pet = request.args.get("pet")
     if pet == "none":
-        visits = [v for v in visits if v["type"] == "PET_VISIT" and not v["pet"]]
+        visits = [v for v in visits if v["type"] == "PET_VISIT" and not v["pet"] and not v["ignored"]]
     elif pet:
         visits = [v for v in visits if v["pet"] == pet]
     flt = request.args.get("filter")
@@ -616,6 +761,8 @@ def api_events():
         visits = [v for v in visits if v["review"]]
     elif flt == "corrected":
         visits = [v for v in visits if v["corrected"]]
+    elif flt == "ignored":
+        visits = [v for v in visits if v["ignored"]]
 
     total = len(visits)
     size = min(int(request.args.get("size", 100)), 500)
@@ -657,20 +804,25 @@ def api_event(event_id):
 @app.route("/api/events/<event_id>/override", methods=["POST", "DELETE"])
 def api_override(event_id):
     conn = db()
-    act = conn.execute("SELECT type, ts, pet_ids, original_pet_ids FROM activities WHERE id = ?", (event_id,)).fetchone()
+    act = conn.execute("SELECT type, ts, pet_ids, original_pet_ids, pet_weight FROM activities WHERE id = ?",
+                       (event_id,)).fetchone()
     if not act:
         abort(404)
+    # too light to be a cat: notes can change, the cat can't (and Whisker keeps no cat)
+    light = act["type"] == "PET_VISIT" and act["pet_weight"] is not None and act["pet_weight"] < IGNORE_UNDER_LB
     whisker_pet = lr_db.first_pet(act["pet_ids"])
     robot_pet = lr_db.first_pet(act["original_pet_ids"] or act["pet_ids"])
     push_to = ...  # Ellipsis = no Whisker change
     if request.method == "DELETE":
         conn.execute("DELETE FROM visit_overrides WHERE activity_id = ?", (event_id,))
-        push_to = robot_pet
+        push_to = ... if light else robot_pet
     else:
         body = request.get_json(force=True, silent=True) or {}
         cur = conn.execute("SELECT * FROM visit_overrides WHERE activity_id = ?", (event_id,)).fetchone()
         pet_id = cur["pet_id"] if cur else None
         note = cur["note"] if cur else None
+        if "pet_id" in body and light and body["pet_id"] not in (None, "", lr_db.UNKNOWN_PET):
+            return jsonify(reason="too_light", error=f"Visits under {IGNORE_UNDER_LB} lb can't be given a cat."), 409
         if "pet_id" in body:
             pet_id = body["pet_id"] or None
             if pet_id not in (None, lr_db.UNKNOWN_PET) and not conn.execute(
@@ -716,6 +868,7 @@ def api_retry_push(event_id):
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
     conn = db()
+    wake_collector = False
     if request.method == "POST":
         body = request.get_json(force=True, silent=True) or {}
         if "writeback" in body:
@@ -724,19 +877,74 @@ def api_settings():
             if body["unit"] not in ("kg", "lb"):
                 abort(400)
             lr_db.set_state(conn, "weight_unit", body["unit"])
+        if "retention_days" in body or "retention_small" in body:
+            before = lr_db.retention_tiers(conn)
+            if "retention_days" in body:
+                days = body["retention_days"]
+                if days not in lr_db.RETENTION_CHOICES or 0 < days < int(_fstate("retention_min_days")):
+                    abort(400)
+                lr_db.set_state(conn, "retention_setting", str(days))
+            if "retention_small" in body:
+                if body["retention_small"] not in lr_db.SMALL_CHOICES:
+                    abort(400)
+                lr_db.set_state(conn, "retention_small", str(body["retention_small"]))
+            if _harsher(lr_db.retention_tiers(conn), before):
+                # clips will be shrunk or lose their video sooner: restart the grace period
+                # (and its banner) so the ones about to change can be marked Keep forever first
+                lr_db.set_state(conn, "retention_enabled_at", str(time.time()))
+        if "sync_interval" in body:
+            if body["sync_interval"] not in lr_db.SYNC_INTERVALS:
+                abort(400)
+            lr_db.set_state(conn, "sync_interval", str(body["sync_interval"]))
+            wake_collector = True
         if "clip_tz" in body:
             if body["clip_tz"] not in lr_db.CLIP_TZ_CHOICES:
                 abort(400)
             lr_db.set_state(conn, "clip_tz", body["clip_tz"])
+        if "notify" in body:
+            import lr_notify
+            try:
+                lr_notify.save_settings(conn, body["notify"] or {})
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
         conn.commit()
-    pending = conn.execute("SELECT COUNT(*) AS n FROM whisker_pushes WHERE status IN ('pending', 'sending')").fetchone()["n"]
+        if wake_collector:
+            lr_db.wake()  # so a waiting collector picks up the new interval now
+    # only visits Whisker still accepts changes to; older ones can't be retried anyway
+    editable = time.time() - lr_db.WHISKER_EDIT_WINDOW_S
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM whisker_pushes p JOIN activities a ON a.id = p.activity_id "
+        "WHERE p.status IN ('pending', 'sending') AND a.ts >= ?", (editable,)).fetchone()["n"]
     failed = conn.execute(
-        "SELECT COUNT(*) AS n FROM whisker_pushes p WHERE status = 'error' AND id = "
-        "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)").fetchone()["n"]
+        "SELECT COUNT(*) AS n FROM whisker_pushes p JOIN activities a ON a.id = p.activity_id "
+        "WHERE p.status = 'error' AND a.ts >= ? AND p.id = "
+        "(SELECT MAX(id) FROM whisker_pushes q WHERE q.activity_id = p.activity_id)", (editable,)).fetchone()["n"]
     return jsonify(writeback=lr_db.writeback_enabled(conn), unit=weight_unit(), pending=pending, failed=failed,
                    retention=retention_info(), clip_tz=lr_db.clip_list_tz(conn),
-                   server_tz=local_timezone_name(),
-                   sync_interval=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
+                   server_tz=local_timezone_name(), notify=_notify_settings(conn),
+                   sync_interval=lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600"))),
+                   sync_intervals=lr_db.SYNC_INTERVALS, retention_choices=lr_db.RETENTION_CHOICES,
+                   small_choices=lr_db.SMALL_CHOICES, access={**lr_auth.describe(), "you": g.user.json()})
+
+
+def _harsher(new, old) -> bool:
+    """Whether retention tiers `new` shrink clips or drop their video sooner than `old`."""
+    inf = float("inf")
+    full = lambda t: t[0] or inf
+    video = lambda t: inf if not t[0] else (t[0] if t[1] is None else (t[1] or inf))
+    return full(new) < full(old) or video(new) < video(old)
+
+
+def _notify_settings(conn) -> dict:
+    import lr_notify
+    cfg = lr_notify.settings(conn)
+    # the token and key never go back to the browser; the page shows the last few characters
+    return {"enabled": cfg["enabled"], "link": cfg["link"], "lead_days": cfg["lead_days"],
+            "categories": [{"id": cid, "group": grp, "label": label, "detail": detail, "on": cid not in cfg["off"]}
+                           for cid, grp, label, detail in lr_notify.CATEGORIES],
+            "user_hint": cfg["user"][-4:] if cfg["user"] else None,
+            "token_hint": cfg["token"][-4:] if cfg["token"] else None,
+            "last_sent": cfg["last_sent"], "last_error": cfg["last_error"]}
 
 
 LOG_TAIL_BYTES = 512 * 1024
@@ -781,6 +989,124 @@ def _median(xs):
     return statistics.median(xs) if xs else None
 
 
+def _fmt_dur(s: float) -> str:
+    s = round(s)
+    return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+# ------------------------------------------------------------ per-cat baselines
+
+BASELINE_DAYS = 30  # each cat's normal is learned from this many days...
+RECENT_DAYS = 7     # ...ending this long ago, so a current change doesn't blend into its own baseline
+NO_WASTE = (None, "", "Unknown")
+
+
+def _spread(xs, center):
+    """Robust standard deviation: the median absolute deviation, scaled to match a normal sd."""
+    return 1.4826 * statistics.median(abs(x - center) for x in xs)
+
+
+def cat_baselines(pets, refs, active, now, tz, end=None):
+    """Each cat's own normal range (visits per day, visit length, weight) and how the
+    RECENT_DAYS before `end` (default now) compare. Uses every robot, since a cat's
+    habits span all of them."""
+    end = end or now
+    first = db().execute("SELECT MIN(ts) AS ts FROM activities").fetchone()["ts"] or end
+    recent_start = end - RECENT_DAYS * 86400
+    base_start = max(recent_start - BASELINE_DAYS * 86400, first)
+    visits = [annotate(v, refs, active) for v in load_visits(base_start, end, types=("PET_VISIT",))
+              if not v["ignored"]]
+    # whole local days inside the baseline window (a partial first day would undercount)
+    day = datetime.fromtimestamp(base_start, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    if day.timestamp() < base_start:
+        day += timedelta(days=1)
+    days = []
+    while (day + timedelta(days=1)).timestamp() <= recent_start:
+        days.append(day.date())
+        day += timedelta(days=1)
+    didx = {d: i for i, d in enumerate(days)}
+
+    out = {}
+    for p in pets:
+        pid = p["id"]
+        mine = [v for v in visits if v["pet"] == pid]
+        base = [v for v in mine if v["ts"] < recent_start]
+        recent = [v for v in mine if v["ts"] >= recent_start]
+        b = {"days": len(days), "ready": len(days) >= 10 and len(base) >= 5}
+        if not b["ready"]:
+            out[pid] = b
+            continue
+
+        counts = [0] * len(days)
+        for v in base:
+            i = didx.get(datetime.fromtimestamp(v["ts"], tz).date())
+            if i is not None:
+                counts[i] += 1
+        mean, sd = statistics.fmean(counts), statistics.pstdev(counts)
+        half = max(2 * sd / math.sqrt(RECENT_DAYS), 0.5)  # range for a week's average
+        b["visits"] = {"mean": round(mean, 2), "low": round(max(0, mean - half), 2), "high": round(mean + half, 2),
+                       "recent": round(len(recent) / RECENT_DAYS, 2),
+                       "last24": sum(1 for v in mine if v["ts"] >= end - 86400),
+                       "day_high": round(mean + max(3 * sd, 2), 1)}
+
+        durs = [v["duration"] for v in base if v["duration"]]
+        if len(durs) >= 8:
+            m = statistics.median(durs)
+            sp = max(_spread(durs, m), 0.1 * m, 5)
+            long_over = max(m + 3 * sp, 1.5 * m)
+            long = [v for v in recent if (v["duration"] or 0) > long_over]
+            b["duration"] = {"median": round(m), "low": round(max(0, m - 2 * sp)), "high": round(m + 2 * sp),
+                             "long_over": round(long_over),
+                             "long": [{"ts": v["ts"], "duration": v["duration"], "waste": v["waste_type"] or None}
+                                      for v in long]}
+
+        # readings that look like another cat (unreviewed) would skew the range
+        ws = [v["weight"] for v in base if v["weight"] and not v["review"]]
+        rws = [v["weight"] for v in recent if v["weight"] and not v["review"]]
+        if len(ws) >= 5:
+            m = statistics.median(ws)
+            sp = max(_spread(ws, m), 0.01 * m)
+            half = max(2.5 * sp / math.sqrt(max(3, len(rws))), 0.02 * m)
+            b["weight"] = {"median": round(m, 3), "low": round(m - half, 3), "high": round(m + half, 3),
+                           "recent": round(statistics.median(rws), 3) if len(rws) >= 3 else None}
+        out[pid] = b
+    return out
+
+
+def baseline_insights(name, b, unit, weight_flagged):
+    """Plain-language flags where a cat is outside its own normal range, as (kind, text)."""
+    out = []
+    v = b.get("visits")
+    if v:
+        if v["last24"] > v["day_high"] and v["last24"] >= 4:
+            out.append(("visits_burst", f"{name} visited {v['last24']} times in the last 24 hours (usually about {v['mean']:.1f}/day). "
+                       f"Many visits in a short time can be a sign of a urinary problem; if {name} is straining "
+                       f"or producing little, call your vet."))
+        elif not v["low"] <= v["recent"] <= v["high"]:
+            word = "more" if v["recent"] > v["high"] else "less"
+            out.append(("visits_" + word, f"{name} is visiting {word} often than usual: {v['recent']:.1f}/day "
+                                          f"over the last {RECENT_DAYS} days, against a usual "
+                                          f"{v['low']:.1f}–{v['high']:.1f}/day."))
+    d = b.get("duration")
+    if d and d["long"]:
+        n = len(d["long"])
+        empty = sum(1 for x in d["long"] if x["waste"] in NO_WASTE)
+        recent3 = sum(1 for x in d["long"] if x["ts"] >= time.time() - 3 * 86400)
+        if n >= 3 or recent3 >= 2 or empty >= 2:
+            msg = (f"{name} had {n} unusually long visit{'s' if n != 1 else ''} in the last {RECENT_DAYS} days "
+                   f"(over {_fmt_dur(d['long_over'])}; typical is {_fmt_dur(d['median'])})")
+            if empty:
+                msg += f", {empty} with no waste detected. Long visits with little output can mean straining"
+            out.append(("long_visits", msg + "."))
+    w = b.get("weight")
+    if w and w["recent"] is not None and not weight_flagged and not w["low"] <= w["recent"] <= w["high"]:
+        word = "below" if w["recent"] < w["low"] else "above"
+        out.append(("weight_" + word, f"{name}'s weight over the last {RECENT_DAYS} days "
+                                      f"({fmt_weight(w['recent'], unit)}) is {word} the usual range "
+                                      f"({fmt_weight(w['low'], unit)}–{fmt_weight(w['high'], unit)})."))
+    return out
+
+
 @app.route("/api/analysis")
 def api_analysis():
     tz = local_tz()
@@ -802,7 +1128,7 @@ def api_analysis():
     names = {p["id"]: p["name"] for p in pets}
     refs = reference_weights(pets)
     active = {p["id"] for p in pets if p["active"]}
-    everything = load_visits(start - n_days * 86400, None, robot, types=None)
+    everything = [v for v in load_visits(start - n_days * 86400, None, robot, types=None) if not v["ignored"]]
     in_range = [annotate(v, refs, active) for v in everything if v["ts"] >= start]
     visits = [v for v in in_range if v["type"] == "PET_VISIT"]
     prev_visits = [v for v in everything if v["ts"] < start and v["type"] == "PET_VISIT"]
@@ -904,8 +1230,11 @@ def api_analysis():
                 pairs[(v["api_pet"] or "none", v["pet"] or "unknown")] += 1
     auto_ided = sum(1 for v in in_range if v["type"] == "PET_VISIT" and v["api_pet"])
 
+    baselines = cat_baselines(pets, refs, active, now, tz)
+    for k in kpis:
+        k["baseline"] = baselines.get(k["pet"])
     insights = build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pairs,
-                              names, offline, interrupted, cycles_daily, now, tz)
+                              names, offline, interrupted, cycles_daily, now, tz, baselines)
 
     return jsonify(
         pets=pets, days=n_days, start=start * 1000, tz=str(tz),
@@ -925,40 +1254,14 @@ def api_analysis():
 
 
 def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pairs, names,
-                   offline, interrupted, cycles_daily, now, tz):
+                   offline, interrupted, cycles_daily, now, tz, baselines):
     unit = weight_unit()
     out = []
     by_pet = {k["pet"]: k for k in kpis}
-    week = 7 * 86400
     for p in pets:
-        if not p["active"]:
-            continue
-        k = by_pet[p["id"]]
-        name = p["name"]
-        if k["last_visit"] is None:
-            if k["prev_per_day"]:
-                out.append(("warn", f"{name} has no recorded visits in this period."))
-            continue
-        hours = (now - k["last_visit"]) / 3600
-        if hours >= 24 and k["per_day"] >= 1:
-            out.append(("warn", f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day)."))
-        mine = [v["ts"] for v in visits if v["pet"] == p["id"]]
-        this_wk = sum(1 for t in mine if t >= now - week) / 7
-        last_wk = sum(1 for t in mine if now - 2 * week <= t < now - week) / 7
-        if n_days >= 14 and last_wk:
-            delta = (this_wk - last_wk) / last_wk
-            if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
-                word = "up" if delta > 0 else "down"
-                out.append(("warn", f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
-                                    f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
-        if k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5:
-            pct, ch = k["weight_change_pct"], k["weight_change"]
-            out.append(("warn", f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) over this period. "
-                                f"A sustained change of 5%+ is worth mentioning to your vet."))
-        w = k["waste"]
-        any_feces = any(x["waste"].get("Feces") for x in kpis)
-        if any_feces and n_days >= 7 and sum(w.values()) >= 10 and not w.get("Feces"):
-            out.append(("warn", f"{name} has no stool visits recorded in {n_days} days."))
+        if p["active"]:
+            out += [("warn", t, p["id"], kind) for kind, t in _cat_insights(
+                p, by_pet[p["id"]], baselines.get(p["id"]) or {}, kpis, visits, n_days, now, unit)]
     total = [sum(hourly[k][h] for k in hourly) for h in range(24)]
     if sum(total):
         peak = max(range(24), key=lambda h: total[h])
@@ -980,7 +1283,294 @@ def build_insights(pets, kpis, visits, hourly, n_days, corrected, auto_ided, pai
         out.append(("warn", f"The robot went offline {len(offline)} time{'s' if len(offline) != 1 else ''}, "
                             f"most recently {datetime.fromtimestamp(max(offline), tz).strftime('%b %d %H:%M')}."))
     order = {"warn": 0, "info": 1}
-    return [{"level": lvl, "text": t} for lvl, t in sorted(out, key=lambda x: order[x[0]])]
+    out = [x if len(x) == 4 else (*x, None, None) for x in out]
+    return [{"level": lvl, "text": t, "pet": pet, "kind": kind}
+            for lvl, t, pet, kind in sorted(out, key=lambda x: order[x[0]])]
+
+
+def _cat_insights(p, k, b, kpis, visits, n_days, now, unit) -> list[tuple[str, str]]:
+    """Warnings about one cat as (kind, text); the Cats page shows them behind the ⚠ on its
+    card, and notifications use the kind to tell a new problem from one already sent."""
+    out = []
+    name = p["name"]
+    if k["last_visit"] is None:
+        if k["prev_per_day"]:
+            out.append(("no_visits", f"{name} has no recorded visits in this period."))
+        return out
+    hours = (now - k["last_visit"]) / 3600
+    if hours >= 24 and k["per_day"] >= 1:
+        out.append(("no_visit_hours", f"{name} hasn't visited in {hours:.0f} hours (usually {k['per_day']:.1f}×/day)."))
+    if not b.get("ready"):
+        # no baseline yet: fall back to comparing with the week before
+        week = 7 * 86400
+        mine = [v["ts"] for v in visits if v["pet"] == p["id"]]
+        this_wk = sum(1 for t in mine if t >= now - week) / 7
+        last_wk = sum(1 for t in mine if now - 2 * week <= t < now - week) / 7
+        if n_days >= 14 and last_wk:
+            delta = (this_wk - last_wk) / last_wk
+            if abs(delta) >= 0.4 and abs(this_wk - last_wk) >= 1:
+                word = "up" if delta > 0 else "down"
+                out.append(("visits_" + word, f"{name}'s visits are {word} {abs(delta) * 100:.0f}% this week "
+                                              f"({this_wk:.1f}/day vs {last_wk:.1f}/day the week before)."))
+    weight_flagged = k["weight_change_pct"] is not None and abs(k["weight_change_pct"]) >= 5
+    if weight_flagged:
+        pct, ch = k["weight_change_pct"], k["weight_change"]
+        out.append(("weight_change", f"{name}'s weight changed {fmt_weight(ch, unit, signed=True)} ({pct:+.1f}%) "
+                                     f"over this period. A sustained change of 5%+ is worth mentioning to your vet."))
+    if b.get("ready"):
+        out += baseline_insights(name, b, unit, weight_flagged)
+    w = k["waste"]
+    any_feces = any(x["waste"].get("Feces") for x in kpis)
+    if any_feces and n_days >= 7 and sum(w.values()) >= 10 and not w.get("Feces"):
+        out.append(("no_stool", f"{name} has no stool visits recorded in {n_days} days."))
+    return out
+
+
+# ------------------------------------------------------------ notifications
+
+
+# which notification category (lr_notify.CATEGORIES) each kind of cat warning belongs to
+CAT_CATEGORIES = {"visits_burst": "burst", "visits_more": "more_visits", "visits_less": "fewer_visits",
+                  "visits_up": "more_visits", "visits_down": "fewer_visits",
+                  "no_visit_hours": "no_visits", "no_visits": "no_visits", "long_visits": "long_visits",
+                  "weight_change": "weight_change", "weight_below": "weight_range", "weight_above": "weight_range",
+                  "no_stool": "no_stool"}
+DRAWER_FAULTS = ("Waste drawer full", "Drawer-full indicator on")
+
+
+def current_alerts() -> list[dict]:
+    """Problems worth a push notification right now. `key` stays the same while a problem
+    lasts, so lr_notify sends each one once. Needs a request context (lr_notify sets one up)."""
+    out = []
+    with app.test_request_context("/api/analysis?days=30"):
+        data = api_analysis().get_json()
+    names = {p["id"]: p["name"] for p in data["pets"]}
+    for i in data["insights"]:
+        if i["pet"] and i["kind"]:
+            out.append({"key": f"cat:{i['pet']}:{i['kind']}", "group": "cats", "category": CAT_CATEGORIES[i["kind"]],
+                        "subject": names.get(i["pet"], "A cat"), "text": i["text"],
+                        "priority": 1 if i["kind"] == "visits_burst" else 0})
+    for r in db().execute("SELECT serial, name, info FROM robots WHERE info IS NOT NULL"):
+        info = json.loads(r["info"])
+        problems = [(f"fault:{f}", "drawer_full" if f in DRAWER_FAULTS else "fault", f)
+                    for f in info.get("faults") or []]
+        if info.get("online") is False:
+            problems.append(("offline", "offline", "Offline: the robot isn't connected to Whisker."))
+        if info.get("litter_state") in ("LOW", "EMPTY", "REFILL"):
+            problems.append(("litter", "litter",
+                             f"Litter level is {info['litter_state'].lower()}; top up the hopper or globe."))
+        out += [{"key": f"robot:{r['serial']}:{k}", "group": "robots", "category": cat, "subject": r["name"],
+                 "text": t, "priority": 0} for k, cat, t in problems]
+        out += [{"key": f"robot:{r['serial']}:{k}", "group": "iq", "category": cat, "subject": r["name"],
+                 "text": t, "priority": 0} for k, cat, t in _iq_alerts(r["serial"])]
+    return out
+
+
+def _iq_alerts(serial) -> list[tuple[str, str, str]]:
+    """Robot IQ forecasts that are due within the lead time set on the Settings page."""
+    import lr_notify
+    lead = lr_notify.settings(db())["lead_days"]
+    tz = local_tz()
+    on = lambda eta: datetime.fromtimestamp(eta, tz).strftime("%a %-d %b")
+    days = lambda d: "less than a day" if d < 1 else f"about {d:.0f} day{'s' if round(d) != 1 else ''}"
+    f = lr_iq.forecasts(db(), serial)
+    out = []
+    d = f["drawer"]
+    if d and d.get("state") == "ok" and d["days"] <= lead:
+        out.append(("drawer_soon", "drawer_soon", f"Waste drawer will be full in {days(d['days'])} "
+                                                  f"(around {on(d['eta'])}) at the current rate."))
+    h = f["hopper"]
+    if h and h.get("state") == "empty":
+        out.append(("hopper_empty", "hopper_soon", "Litter hopper is empty; refill it."))
+    elif h and h.get("state") == "low":
+        out.append(("hopper_low", "hopper_soon", "Litter hopper is low; refill it soon."))
+    elif h and h.get("state") == "ok" and h["days"] <= lead:
+        out.append(("hopper_soon", "hopper_soon", f"Litter hopper will need refilling in {days(h['days'])} "
+                                                  f"(around {on(h['eta'])}) at the current rate."))
+    return out
+
+
+@app.route("/api/notify/test", methods=["POST"])
+def api_notify_test():
+    """Send a test notification with the keys typed on the Settings page (or the saved ones)."""
+    import lr_notify
+    body = request.get_json(force=True, silent=True) or {}
+    conn = db()
+    cfg = lr_notify.settings(conn)
+    token, user = body.get("token") or cfg["token"], body.get("user") or cfg["user"]
+    if not token or not user:
+        return jsonify(error="Enter your user key and API token first."), 400
+    try:
+        lr_notify.send(token, user, "Litter Robot", "Test notification: Pushover is set up.",
+                       url=cfg["link"] or None)
+    except lr_notify.PushoverError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(ok=True)
+
+
+# ------------------------------------------------------------ vet report
+
+
+@app.route("/report/<pet_id>.pdf")
+def vet_report(pet_id):
+    import lr_report  # reportlab is only loaded when someone asks for a report
+    tz = local_tz()
+    today = datetime.now(tz).date()
+    try:
+        last = date.fromisoformat(request.args["to"]) if request.args.get("to") else today
+        first = date.fromisoformat(request.args["from"]) if request.args.get("from") else last - timedelta(days=29)
+    except ValueError:
+        abort(400)
+    last = min(last, today)
+    if first > last or (last - first).days > 366:
+        abort(400)
+    pets = load_pets()
+    pet = next((p for p in pets if p["id"] == pet_id), None)
+    if not pet:
+        abort(404)
+    pdf = lr_report.build_pdf(vet_report_data(pet, pets, first, last, tz))
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", pet["name"]).strip("-") or "cat"
+    return Response(pdf, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{slug}-litter-report-{first}-to-{last}.pdf"'})
+
+
+def vet_report_data(pet, pets, first: date, last: date, tz) -> dict:
+    """Everything the vet report shows for one cat over [first, last] (local dates).
+    Usual ranges come from the period plus up to BASELINE_DAYS before it, using robust
+    statistics so the period's own outliers barely move them."""
+    unit = weight_unit()
+    conv = (lambda lb: lb * 0.453592) if unit == "kg" else (lambda lb: lb)
+    fw = lambda lb: f"{conv(lb):.2f} {unit}"
+    when = lambda ts: datetime.fromtimestamp(ts, tz).strftime("%a %-d %b %H:%M")
+    pid = pet["id"]
+    start = datetime.combine(first, datetime.min.time(), tz).timestamp()
+    end = datetime.combine(last + timedelta(days=1), datetime.min.time(), tz).timestamp()
+    refs = reference_weights(pets)
+    active = {p["id"] for p in pets if p["active"]}
+    data_start = db().execute("SELECT MIN(ts) AS ts FROM activities").fetchone()["ts"] or start
+    pool_start = max(start - BASELINE_DAYS * 86400, data_start)
+    pool = sorted((v for v in (annotate(v, refs, active) for v in load_visits(pool_start, end, types=("PET_VISIT",)))
+                   if v["pet"] == pid and not v["ignored"]), key=lambda v: v["ts"])
+    visits = [v for v in pool if v["ts"] >= start]
+
+    days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    didx = {d: i for i, d in enumerate(days)}
+    daily = [{"visits": 0, "urine": 0, "feces": 0, "other": 0, "weights": [], "longest": None} for _ in days]
+    readings = []
+    for v in visits:
+        lt = datetime.fromtimestamp(v["ts"], tz)
+        i = didx.get(lt.date())
+        if i is None:
+            continue
+        row = daily[i]
+        row["visits"] += 1
+        row[{"Urine": "urine", "Feces": "feces"}.get(v["waste_type"], "other")] += 1
+        if v["duration"]:
+            row["longest"] = max(row["longest"] or 0, v["duration"])
+        if v["weight"] and not v["review"]:
+            row["weights"].append(v["weight"])
+            readings.append((i + (lt.hour + lt.minute / 60) / 24 - 0.5, round(conv(v["weight"]), 3)))
+    for row in daily:
+        row["weight"] = round(conv(statistics.median(row["weights"])), 3) if row["weights"] else None
+
+    # the cat's usual: daily visit counts over whole days in the pool
+    d0 = datetime.fromtimestamp(pool_start, tz).date()
+    if datetime.combine(d0, datetime.min.time(), tz).timestamp() < pool_start:
+        d0 += timedelta(days=1)
+    pool_days = [d0 + timedelta(days=i) for i in range((last - d0).days + 1)]
+    counts = Counter(datetime.fromtimestamp(v["ts"], tz).date() for v in pool)
+    day_counts = [counts.get(d, 0) for d in pool_days] or [0]
+    mean, sd = statistics.fmean(day_counts), statistics.pstdev(day_counts)
+    durs = [v["duration"] for v in pool if v["duration"]]
+    dm = statistics.median(durs) if len(durs) >= 8 else None
+    dsp = max(_spread(durs, dm), 0.1 * dm, 5) if dm else None
+    long_over = max(dm + 3 * dsp, 1.5 * dm) if dm else None
+    ws = [v["weight"] for v in pool if v["weight"] and not v["review"]]
+    wm = statistics.median(ws) if len(ws) >= 5 else None
+    wsp = max(_spread(ws, wm), 0.01 * wm) if wm else None
+
+    anomalies = []
+    for d, row in zip(days, daily):
+        if row["visits"] >= 4 and row["visits"] > mean + max(3 * sd, 2):
+            anomalies.append(f"{d:%a %-d %b}: {row['visits']} visits (usually about {mean:.1f} a day).")
+    long_visits = [v for v in visits if long_over and (v["duration"] or 0) > long_over]
+    if long_visits:
+        empty = sum(1 for v in long_visits if v["waste_type"] in NO_WASTE)
+        msg = (f"{len(long_visits)} unusually long visit{'s' if len(long_visits) != 1 else ''} "
+               f"(over {_fmt_dur(long_over)}; typical {_fmt_dur(dm)})")
+        if empty:
+            msg += f", {empty} with no waste detected. Long visits with little output can mean straining"
+        anomalies.append(msg + ". Listed below.")
+    if mean >= 0.7:
+        # a gap counts when it's at least 3× the cat's usual time between visits (and a day)
+        min_gap = max(24, 3 * 24 / mean) * 3600
+        gaps = sorted(((b["ts"] - a["ts"], a["ts"], b["ts"]) for a, b in zip(visits, visits[1:])
+                       if b["ts"] - a["ts"] >= min_gap), reverse=True)
+        if len(gaps) > 3:
+            g, a, b = gaps[0]
+            anomalies.append(f"{len(gaps)} gaps of {min_gap / 3600:.0f}+ hours without a visit; the longest was "
+                             f"{g / 3600:.0f} hours, from {when(a)} to {when(b)}.")
+        else:
+            anomalies += [f"No visits for {g / 3600:.0f} hours, from {when(a)} to {when(b)}." for g, a, b in gaps]
+    if wm:
+        band = max(3 * wsp, 0.04 * wm)
+        off = [(d, row) for d, row in zip(days, daily)
+               if len(row["weights"]) >= 2 and abs(statistics.median(row["weights"]) - wm) > band]
+        if off:
+            shown = ", ".join(f"{d:%-d %b} ({row['weight']:.2f})" for d, row in off[:6])
+            anomalies.append(f"Daily weight outside the usual {fw(wm - band)}–{fw(wm + band)} on {len(off)} "
+                             f"day{'s' if len(off) != 1 else ''}: {shown}{'…' if len(off) > 6 else ''}.")
+    wk = 7 * 86400
+    early = [v["weight"] for v in visits if v["weight"] and not v["review"] and v["ts"] < start + wk]
+    late = [v["weight"] for v in visits if v["weight"] and not v["review"] and v["ts"] >= end - wk]
+    change = None
+    if len(early) >= 3 and len(late) >= 3 and len(days) >= 14:
+        e, l = statistics.median(early), statistics.median(late)
+        change = (l - e, 100 * (l - e) / e)
+        if abs(change[1]) >= 5:
+            anomalies.append(f"Weight changed {conv(change[0]):+.2f} {unit} ({change[1]:+.1f}%) "
+                             f"from the first week to the last.")
+    # longest run of days without a stool visit, if the cat normally has them
+    gap, run, run_end = 0, 0, None
+    stool_days = {datetime.fromtimestamp(v["ts"], tz).date() for v in pool if v["waste_type"] == "Feces"}
+    for d in days:
+        run = 0 if d in stool_days else run + 1
+        if run > gap:
+            gap, run_end = run, d
+    if stool_days and gap >= 3:
+        anomalies.append(f"No stool visits for {gap} days in a row "
+                         f"({run_end - timedelta(days=gap - 1):%-d %b}–{run_end:%-d %b}).")
+
+    n = len(visits)
+    tot = Counter({"urine": 0, "feces": 0, "other": 0})
+    for row in daily:
+        tot.update({k: row[k] for k in ("urine", "feces", "other")})
+    pct = lambda k: f"{100 * tot[k] / n:.0f}%" if n else "—"
+    photo = db().execute("SELECT photo_file FROM pets WHERE pet_id = ?", (pid,)).fetchone()
+    return {
+        "name": pet["name"], "unit": unit, "tz": str(tz), "start": first, "end": last, "days": days,
+        "generated": datetime.now(tz),
+        "photo": str(lr_db.photo_dir() / photo["photo_file"]) if photo and photo["photo_file"] else None,
+        "summary": {
+            "visits": n, "per_day": n / len(days),
+            "usual_visits": f"about {mean:.1f} a day",
+            "waste_split": f"{pct('urine')} / {pct('feces')} / {pct('other')}",
+            "stool_gap": f"{gap} day{'s' if gap != 1 else ''}" if stool_days else "no stool visits recorded",
+            "median_duration": _median([v["duration"] for v in visits if v["duration"]]),
+            "usual_duration": f"{_fmt_dur(max(0, dm - 2 * dsp))}–{_fmt_dur(dm + 2 * dsp)}" if dm else "not enough data",
+            "weight_first": fw(statistics.median(early)) if len(early) >= 3 else "—",
+            "weight_last": fw(statistics.median(late)) if len(late) >= 3 else "—",
+            "weight_change": f"{conv(change[0]):+.2f} {unit} ({change[1]:+.1f}%)" if change else "not enough data",
+            "usual_weight": f"{fw(wm - 2 * wsp)}–{fw(wm + 2 * wsp)}" if wm else "not enough data",
+        },
+        "daily": daily, "daily_weight": [row["weight"] for row in daily], "weight_readings": readings,
+        "weight_band": (conv(wm - 2 * wsp), conv(wm + 2 * wsp)) if wm else None,
+        "anomalies": anomalies,
+        "long_over": long_over, "typical": dm,
+        "long_visits": [{"when": when(v["ts"]), "duration": v["duration"], "waste": v["waste_type"] or None,
+                         "robot": v["robot_name"]} for v in long_visits],
+        "notes": [{"when": when(v["ts"]), "note": v["note"]} for v in visits if v["note"]],
+    }
 
 
 # ------------------------------------------------------------ clips API (calendar page)
@@ -1085,7 +1675,15 @@ def serve_video(robot, filename):
 
 
 # Loggers whose records go to web.log rather than the collector's sync.log.
-LOGGERS = ("werkzeug", app.logger.name, lr_live.LOG.name)
+LOGGERS = ("werkzeug", app.logger.name, lr_live.LOG.name, lr_auth.LOG.name)
+
+
+def _not_health_check(record: logging.LogRecord) -> bool:
+    """Leave Docker's and uptime monitors' health checks out of the console's request lines."""
+    return "/api/health" not in record.getMessage()
+
+
+logging.getLogger("werkzeug").addFilter(_not_health_check)
 
 
 def serve() -> None:
@@ -1094,7 +1692,11 @@ def serve() -> None:
         handler = lr_db.log_file_handler("web")
         handler.setLevel(logging.WARNING)
         for name in LOGGERS:
-            logging.getLogger(name).addHandler(handler)
+            if name != lr_auth.LOG.name:
+                logging.getLogger(name).addHandler(handler)
+        # sessions and refusals have their own file (Settings > Logs > Access)
+        lr_auth.LOG.setLevel(logging.INFO)
+        lr_auth.LOG.addHandler(lr_db.log_file_handler("access"))
     except OSError as err:
         print(f"Not writing a web log file: {err}", flush=True)
     app.run(host="0.0.0.0", port=2287, debug=False, threaded=True)

@@ -45,6 +45,7 @@ from pylitterbot.camera import VideoClip, VideoPlayback, local_timezone_name
 from pylitterbot.robot.litterrobot5 import LitterRobot5
 
 import lr_db
+import lr_notify
 
 LOG = logging.getLogger("lr_clips")
 ACTIVITY_PAGE = 100
@@ -413,6 +414,7 @@ def sync_robot(db, robot: LitterRobot5) -> None:
         scale_weight=_safe(lambda: robot.pet_weight),
         cycle_count=_safe(lambda: robot.cycle_count),
         status=getattr(status, "text", None) or (str(status) if status else None),
+        hopper_status=getattr(_safe(lambda: robot.hopper_status), "name", None),
     )
     lr_db.set_robot_info(db, robot.serial, robot_info(robot))
 
@@ -455,9 +457,12 @@ async def save_pet_photo(db, http: aiohttp.ClientSession, photos: Path, pet_id: 
         ext = lr_db.PHOTO_TYPES.get(resp.content_type)
         if not ext:
             raise RuntimeError(f"unexpected content type {resp.content_type}")
-        data = await resp.content.read(15 * 1024 * 1024 + 1)
-    if len(data) > 15 * 1024 * 1024:
-        raise RuntimeError("photo larger than 15 MB")
+        # StreamReader.read(n) returns whatever has arrived so far, so read until EOF
+        data = b""
+        while chunk := await resp.content.read(15 * 1024 * 1024 + 1 - len(data)):
+            data += chunk
+            if len(data) > 15 * 1024 * 1024:
+                raise RuntimeError("photo larger than 15 MB")
     photos.mkdir(parents=True, exist_ok=True)
     name = f"{slug(pet_id)}{ext}"
     for old in photos.glob(f"{slug(pet_id)}.*"):
@@ -547,7 +552,8 @@ async def main() -> int:
     p.add_argument("--dump", metavar="DIR", help="write raw API JSON for exploration instead of downloading")
     p.add_argument("--interval", type=int,
         default=int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")),
-        help="poll for new videos every N seconds (default 3600, 0 = run once); env: LR_DOWNLOAD_INTERVAL")
+        help="poll for new videos every N seconds (default 3600, 0 = run once); env: LR_DOWNLOAD_INTERVAL. "
+             "The Settings page's sync interval overrides this")
     p.add_argument("--update-interval", type=int,
         default=int(os.environ.get("PYBOT_UPDATE_INTERVAL", "86400")),
         help="check for pylitterbot updates every N seconds (default 86400); env: PYBOT_UPDATE_INTERVAL")
@@ -558,7 +564,8 @@ async def main() -> int:
         help="max pages of 100 activities to fetch per run (default 50); env: LR_ACTIVITY_MAX_PAGES")
     p.add_argument("--retention-days", type=int,
         default=int(os.environ.get("LR_RETENTION_DAYS", "14")),
-        help="delete clips older than N days unless marked keep (default 14, 0 = never); env: LR_RETENTION_DAYS")
+        help="delete clips older than N days unless marked keep (default 14, 0 = never); env: LR_RETENTION_DAYS. "
+             "The Settings page's choice overrides this")
     p.add_argument("--retention-grace-hours", type=float,
         default=float(os.environ.get("LR_RETENTION_GRACE_HOURS", "24")),
         help="wait this long after retention is first enabled before deleting (default 24); env: LR_RETENTION_GRACE_HOURS")
@@ -600,7 +607,9 @@ async def main() -> int:
         LOG.warning("LR_RETENTION_DAYS=%d is shorter than the download window; using %d",
                     args.retention_days, args.days + 2)
         args.retention_days = args.days + 2
-    lr_db.set_state(db, "retention_days", str(args.retention_days))
+    # the Settings page's retention choice overrides this default; neither may go below the window
+    lr_db.set_state(db, "retention_default", str(args.retention_days))
+    lr_db.set_state(db, "retention_min_days", str(args.days + 2))
     lr_db.set_state(db, "sync_running", "0")
     db.execute("UPDATE whisker_pushes SET status = 'pending' WHERE status = 'sending'")  # interrupted last time
     db.execute("UPDATE robot_commands SET status = 'error', error = 'Interrupted by a restart', updated_at = ? "
@@ -638,9 +647,17 @@ async def main() -> int:
                 error = str(err)[:300] or type(err).__name__
             if not args.dump:
                 try:
-                    apply_retention(db, args)
+                    await apply_retention(db, args)
                 except Exception:
                     LOG.exception("retention failed")
+                try:
+                    await asyncio.to_thread(unassign_ignored)
+                except Exception:
+                    LOG.exception("unassigning ignored visits failed")
+                try:
+                    await asyncio.to_thread(lr_notify.after_sync)
+                except Exception:
+                    LOG.exception("notifications failed")
             lr_db.set_state(db, "sync_error", error)
             lr_db.set_state(db, "sync_finished", str(time.time()))
             lr_db.set_state(db, "sync_running", "0")
@@ -655,11 +672,46 @@ async def main() -> int:
         await account.disconnect()
 
 
-def apply_retention(db, args: argparse.Namespace) -> None:
-    if args.retention_days <= 0:
+def unassign_ignored() -> None:
+    """Queue removing the cat Whisker gave to visits too light to be a cat (see web.mark_ignored)."""
+    import web  # the visit rules live with the web UI
+    with web.app.app_context():
+        n = web.queue_ignored_unassigns()
+    if n:
+        LOG.info("Removing the cat from %d visit(s) under %.1f lb in Whisker", n, web.IGNORE_UNDER_LB)
+
+
+SMALL_HEIGHT = 360        # small copies: 360p H.264, about 5% of the original's size
+RETENTION_BUDGET_S = 600  # stop re-encoding after this long; the rest wait for the next sync
+
+
+async def shrink_clip(path: Path) -> None:
+    """Re-encode a clip in place as a small copy."""
+    partial = path.with_name(f"{path.stem}.{os.urandom(4).hex()}.part.mp4")
+    await run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
+                      "-map", "0:v:0", "-map", "0:a?", "-vf", f"scale=-2:{SMALL_HEIGHT},format=yuv420p",
+                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-c:a", "aac", "-b:a", "48k",
+                      "-movflags", "+faststart", str(partial)], partial)
+    partial.replace(path)
+
+
+async def save_picture(path: Path, thumb: Path) -> None:
+    """A still from the clip, for clips whose Whisker thumbnail never downloaded."""
+    partial = thumb.with_name(f"{thumb.stem}.{os.urandom(4).hex()}.part.jpg")
+    await run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i", str(path),
+                      "-frames:v", "1", "-vf", "scale=-2:480", "-q:v", "4", str(partial)], partial)
+    partial.replace(thumb)
+
+
+async def apply_retention(db, args: argparse.Namespace) -> None:
+    """Clips older than the full-quality period become small copies (or, without a small
+    copy stage, lose their video); small copies past their age lose their video too. A
+    clip that loses its video keeps its picture. Clips marked keep are left alone."""
+    full, small = lr_db.retention_tiers(db)
+    if not full:
         return
-    # Give a freshly enabled retention policy a grace period so existing clips
-    # can be marked "keep" before anything is removed.
+    # Give a freshly enabled or shortened policy a grace period so existing clips
+    # can be marked "keep" before anything changes.
     enabled_at = lr_db.get_state(db, "retention_enabled_at")
     if not enabled_at:
         enabled_at = str(time.time())
@@ -667,12 +719,56 @@ def apply_retention(db, args: argparse.Namespace) -> None:
         db.commit()
     starts = float(enabled_at) + args.retention_grace_hours * 3600
     if time.time() < starts:
-        LOG.info("Retention: deleting clips older than %d days starts %s",
-                 args.retention_days, datetime.fromtimestamp(starts).strftime("%Y-%m-%d %H:%M"))
+        LOG.info("Retention: changes to clips older than %d days start %s",
+                 full, datetime.fromtimestamp(starts).strftime("%Y-%m-%d %H:%M"))
         return
-    deleted = lr_db.apply_retention(db, Path(args.out), args.retention_days, LOG)
-    if deleted:
-        LOG.info("Retention: deleted %d clip(s) older than %d days", deleted, args.retention_days)
+    now, root = time.time(), Path(args.out)
+    small_until = None if small is None else (0 if small == 0 else now - small * 86400)
+
+    async def to_picture(r) -> bool:
+        mp4 = root / r["robot_folder"] / r["video_file"]
+        thumb = mp4.with_suffix(".jpg")
+        if not thumb.exists() and mp4.exists():
+            try:
+                await save_picture(mp4, thumb)
+            except RuntimeError as err:
+                LOG.warning("retention: no picture saved for %s: %s", r["video_file"], err)
+        return lr_db.drop_clip_video(db, root, r, LOG)
+
+    shrunk = dropped = saved = 0
+    deadline = time.monotonic() + RETENTION_BUDGET_S
+    rows = db.execute("SELECT id, robot_folder, video_file, ts FROM clips WHERE keep = 0 AND deleted_at IS NULL "
+                      "AND video_file IS NOT NULL AND quality IS NULL AND ts < ? ORDER BY ts DESC",
+                      (now - full * 86400,)).fetchall()
+    for r in rows:
+        if small_until is not None and r["ts"] >= small_until:
+            if time.monotonic() > deadline:
+                LOG.info("Retention: time's up for this sync; the rest are shrunk next time")
+                break
+            mp4 = root / r["robot_folder"] / r["video_file"]
+            try:
+                before = mp4.stat().st_size
+                await shrink_clip(mp4)
+            except (OSError, RuntimeError) as err:
+                LOG.warning("retention: could not shrink %s: %s", r["video_file"], err)
+                continue
+            db.execute("UPDATE clips SET quality = 'small' WHERE id = ?", (r["id"],))
+            db.commit()
+            shrunk += 1
+            saved += before - mp4.stat().st_size
+        elif await to_picture(r):
+            dropped += 1
+    if small:
+        for r in db.execute("SELECT id, robot_folder, video_file, ts FROM clips WHERE keep = 0 AND deleted_at IS NULL "
+                            "AND video_file IS NOT NULL AND quality = 'small' AND ts < ?",
+                            (now - small * 86400,)).fetchall():
+            if await to_picture(r):
+                dropped += 1
+    db.commit()
+    if shrunk:
+        LOG.info("Retention: shrank %d clip(s) older than %d days, saving %.0f MB", shrunk, full, saved / 1e6)
+    if dropped:
+        LOG.info("Retention: removed the video from %d clip(s), keeping their pictures", dropped)
 
 
 async def send_pushes(db, account: Account) -> None:
@@ -748,7 +844,7 @@ async def redownload_clip(db, robot: LitterRobot5, args: argparse.Namespace, cli
                 LOG.debug("thumbnail failed for %s: %s", clip_id, err)
     lr_db.upsert_clip(db, clip_id=clip_id, robot_serial=robot.serial, robot_folder=row["robot_folder"], raw=raw,
                       video_file=mp4.name, thumb_file=thumb.name if thumb.exists() else None)
-    db.execute("UPDATE clips SET deleted_at = NULL WHERE id = ?", (clip_id,))
+    db.execute("UPDATE clips SET deleted_at = NULL, quality = NULL WHERE id = ?", (clip_id,))
     db.commit()
     return None
 
@@ -820,16 +916,19 @@ async def outbox_worker(args: argparse.Namespace, account: Account, wake: asynci
         await wait_for_wake(wake, 60, poll=1.5)
 
 
-async def wait_for_next_run(db, interval: int, wake: asyncio.Event | None) -> str:
-    """Sleep until the next scheduled run, waking early for a manual refresh from the web UI."""
-    deadline = time.monotonic() + interval
-    while time.monotonic() < deadline:
+async def wait_for_next_run(db, default_interval: int, wake: asyncio.Event | None) -> str:
+    """Sleep until the next scheduled run, waking early for a manual refresh from the web UI.
+    The interval is re-read while waiting, so a change on the Settings page applies at once."""
+    finished = time.monotonic()
+    while True:
         requested = float(lr_db.get_state(db, "refresh_requested") or 0)
         if requested > float(lr_db.get_state(db, "sync_started") or 0):
             LOG.info("Manual refresh requested")
             return "manual"
-        await wait_for_wake(wake, max(0.1, deadline - time.monotonic()), poll=2)
-    return "scheduled"
+        remaining = finished + lr_db.sync_interval(db, default_interval) - time.monotonic()
+        if remaining <= 0:
+            return "scheduled"
+        await wait_for_wake(wake, max(0.1, remaining), poll=2)
 
 
 async def wait_for_wake(wake: asyncio.Event | None, timeout: float, poll: float) -> None:

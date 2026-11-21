@@ -11,6 +11,11 @@ services:
       PYBOT_UPDATE_INTERVAL: ${PYBOT_UPDATE_INTERVAL:-86400}
       LR_ACTIVITY_MAX_PAGES: ${LR_ACTIVITY_MAX_PAGES:-50}
       LR_HWACCEL: ${LR_HWACCEL:-auto}
+      # Access control with Cloudflare Access (see README): Admin or Viewer per user.
+      LR_AUTH_HEADER: ${LR_AUTH_HEADER:-}            # e.g. Cf-Access-Authenticated-User-Email
+      LR_AUTH_TEAM_DOMAIN: ${LR_AUTH_TEAM_DOMAIN:-}  # e.g. yourteam.cloudflareaccess.com
+      LR_AUTH_AUD: ${LR_AUTH_AUD:-}                  # the Access application's Audience (AUD) tag
+      LR_ADMINS: ${LR_ADMINS:-}                      # comma-separated admin emails
     # Hardware video encoding (Intel/AMD VAAPI) for clips that switch cameras:
     # uncomment both, with RENDER_GID set to the host's render group id
     # (getent group render | cut -d: -f3). Without them, encoding runs on the CPU.

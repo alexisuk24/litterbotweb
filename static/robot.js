@@ -1,13 +1,16 @@
 const SERIAL = el('root').dataset.serial;
 const ACTIONS = [
-  { cmd: 'clean', label: 'Start a clean cycle', button: 'Clean now', confirm: 'Yes, start cycle',
+  { cmd: 'clean', button: 'Clean', title: 'Start a clean cycle?', confirm: 'Start cycle',
+    icon: '<path d="M21 12a9 9 0 1 1-2.6-6.4M21 3.5V9h-5.5"/>',
     desc: 'Rotates the globe now and sifts waste into the drawer. Make sure no cat is inside.' },
-  { cmd: 'reset_drawer', label: 'Tare', button: 'Tare', confirm: 'Yes, tare',
+  { cmd: 'reset_drawer', button: 'Tare', title: 'Tare the scale?', confirm: 'Tare',
+    icon: '<path d="M12 4v16M7 20h10M4 7h16M7 7l-3 6.5a3 3 0 0 0 6 0L7 7zM17 7l-3 6.5a3 3 0 0 0 6 0L17 7z"/>',
     desc: 'Resets the scale. Do this after emptying the waste drawer or filling the hopper with litter.' },
-  { cmd: 'remote_reset', label: 'Remote reset', button: 'Reset robot', confirm: 'Yes, reset robot',
+  { cmd: 'remote_reset', button: 'Reset', title: 'Reset the robot?', confirm: 'Reset robot',
+    icon: '<path d="M12 3v9M17.7 6.3a8 8 0 1 1-11.4 0"/>',
     desc: 'Clears errors, e.g. after a jam or a pinch detection. The robot may run a cycle afterwards.' },
 ];
-const s = { data: null, armed: null, armTimer: null, poll: null, autoRefreshed: false };
+const s = { data: null, confirming: null, poll: null, autoRefreshed: false };
 
 const ago = ts => {
   if (!ts) return 'never';
@@ -19,7 +22,8 @@ const ago = ts => {
 };
 const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
 const pct = v => v == null ? '—' : `${Math.round(v)}%`;
-const titleCase = t => t ? t.toLowerCase().replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : '—';
+// UPDATE_SUCCESSFUL, UpdateSuccessful and OPTIMAL all become "Update successful" / "Optimal"
+const titleCase = t => t ? t.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : '—';
 function wifi(rssi) {
   if (rssi == null) return ['—', ''];
   const q = rssi >= -60 ? 'Excellent' : rssi >= -70 ? 'Good' : rssi >= -80 ? 'Fair' : 'Weak';
@@ -50,11 +54,16 @@ function render() {
     <div class="head">
       <div><h1>${esc(d.robot.name)}</h1><div class="model">${esc(i.model || d.robot.model || '')}${i.setup_date ? ` · set up ${new Date(i.setup_date * 1000).toLocaleDateString()}` : ''}</div></div>
       <span class="state ${stateCls}" role="status"><span class="dot"></span>${esc(stateText)}${i.sleeping ? ' · sleeping' : ''}</span>
-      <div class="right">Status as of ${ago(d.info_at)}<br>${refreshing ? 'Updating…' : '<a id="refreshNow">Update now</a>'}</div>
+      <div class="right">Status as of ${ago(d.info_at)}${CAN_EDIT ? `<br>${refreshing ? 'Updating…' : '<a id="refreshNow">Update now</a>'}` : ''}</div>
     </div>
     ${faulty ? `<div class="faults">${i.faults.map(f => `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : ''}
     ${d.clips_stale ? `<div class="faults"><div>⚠ Whisker hasn't listed any new videos since ${esc(when(d.clips_stale.newest_clip))}, though ${d.clips_stale.visits_since} visit${d.clips_stale.visits_since === 1 ? ' has' : 's have'} happened since. They'll download automatically if Whisker lists them later.</div></div>` : ''}
-  </div>`, `
+  </div>
+  ${CAN_EDIT ? `<div class="card panel">
+    <h2>Actions</h2>
+    <div class="acts">${ACTIONS.map(actionButton).join('')}</div>
+    ${ACTIONS.map(actionError).join('')}
+  </div>` : ''}
   <div class="tiles">
     ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
     ${tile('Litter level', pct(i.litter_level), titleCase(i.litter_state), i.litter_level, litterWarn)}
@@ -64,14 +73,8 @@ function render() {
     ${tile('Total cycles', i.total_cycles ?? '—', i.scoops_saved != null ? `${i.scoops_saved.toLocaleString()} scoops saved` : '')}
     ${tile('Wi-Fi', wq, wd)}
     ${tile('Last seen', ago(i.last_seen), when(i.last_seen))}
-  </div>
-
-  <div class="cols">
-    <div class="card panel">
-      <h2>Actions</h2>
-      ${ACTIONS.map(actionRow).join('')}
-    </div>
-    <div style="display:grid;gap:1rem">
+  </div>`, `
+      ${iqCard(d.iq)}
       <div class="card panel">
         <h2>Firmware</h2>
         <div class="fw">
@@ -81,19 +84,53 @@ function render() {
           <div class="note">Firmware updates have to be installed from the Whisker app. Whisker's API for the Litter-Robot 5 can't start an update or report whether one is available.</div>
         </div>
       </div>
+      `, d.robot.camera, `
       <div class="card panel">
         <h2>Recent robot activity</h2>
         <div class="list">${d.recent.length ? d.recent.map(a => `<div><span class="t">${esc(when(a.ts))}</span><span>${esc(typeLabel(a.type))}${a.subtype && !/^robotCycleState/.test(a.subtype) ? ` <span class="muted">(${esc(a.subtype)})</span>` : ''}</span></div>`).join('') : '<div class="muted">Nothing recorded yet</div>'}</div>
-      </div>
-    </div>
-  </div>`, d.robot.camera);
+      </div>`);
 }
 
-// The live view card sits between #top and #rest so re-rendering never touches its <video>.
-function show(top, rest = '', camera = false) {
+// The live view card is static markup (with #below under it, beside #side) so re-rendering
+// never touches its <video>.
+function show(top, side = '', camera = false, below = '') {
   el('top').innerHTML = top;
-  el('rest').innerHTML = rest;
-  el('live').hidden = !camera;
+  el('side').innerHTML = side;
+  el('below').innerHTML = below;
+  el('live').hidden = !camera || !CAN_EDIT;
+  el('cols').hidden = !side && !(camera && CAN_EDIT) && !below;
+  el('cols').classList.toggle('solo', !camera || !CAN_EDIT);
+}
+
+// Robot IQ: when the drawer will be full and the hopper need refilling
+function iqCard(iq) {
+  if (!iq || (!iq.drawer && !iq.hopper)) return '';
+  const inDays = d => d < 1 ? 'within a day' : `in about ${Math.round(d)} day${Math.round(d) === 1 ? '' : 's'}`;
+  const on = ts => new Date(ts * 1000).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  const row = (label, value, detail, warn) => `<div class="iq-row"><div class="t">${esc(label)}</div>
+    <div><div class="iq-v${warn ? ' warn' : ''}">${esc(value)}</div>${detail ? `<div class="iq-d">${esc(detail)}</div>` : ''}</div></div>`;
+  const rows = [];
+  const d = iq.drawer;
+  if (d) {
+    const facts = [d.per_cycle ? `+${d.per_cycle.toFixed(2)}% per clean cycle` : '',
+                   d.cycles_per_day ? `${d.cycles_per_day} cycles/day` : '',
+                   d.full_level < 100 ? `reports full at ${Math.round(d.full_level)}%` : ''].filter(Boolean).join(' · ');
+    if (d.state === 'full') rows.push(row('Waste drawer', 'Full now', `at ${Math.round(d.level)}%`, true));
+    else if (d.state === 'ok') rows.push(row('Waste drawer', `Full ${inDays(d.days)}`, `around ${on(d.eta)} · ${facts}`, d.days <= 2));
+    else rows.push(row('Waste drawer', 'Learning', `${Math.round(d.level)}% now. A forecast needs a few syncs and about 10 clean cycles since it was last emptied.`));
+  }
+  const h = iq.hopper;
+  if (h) {
+    const facts = [h.capacity ? `about ${Math.round(h.capacity)} dispenses per fill` : '',
+                   h.since_refill != null ? `${h.since_refill} since refilled` : '',
+                   h.per_day ? `${h.per_day}/day` : ''].filter(Boolean).join(' · ');
+    if (h.state === 'empty') rows.push(row('Litter hopper', 'Empty', 'refill it', true));
+    else if (h.state === 'low') rows.push(row('Litter hopper', 'Litter low', 'refill it soon', true));
+    else if (h.state === 'fault') rows.push(row('Litter hopper', titleCase(h.status), '', true));
+    else if (h.state === 'ok') rows.push(row('Litter hopper', `Refill ${inDays(h.days)}`, `around ${on(h.eta)} · ${facts}`, h.days <= 2));
+    else rows.push(row('Litter hopper', 'Learning', 'The robot only reports Ready, Litter low or Empty. A forecast starts once a refill has been seen running down to Litter low.' + (facts ? ` ${facts}.` : '')));
+  }
+  return `<div class="card panel"><h2>Robot IQ</h2><div class="iq">${rows.join('')}</div></div>`;
 }
 
 const FW_NAMES = { ESP: 'Wi-Fi module', MCU: 'Main controller', CAM: 'Camera', EDGE: 'Edge processor', AI: 'AI model' };
@@ -105,8 +142,9 @@ function firmwareTable(history, raw) {
   for (const f of history) if (!current[f.component]) current[f.component] = f;  // newest first
   const rows = Object.values(current);
   if (!rows.length) return `<div><code>${esc(raw || 'unknown')}</code></div>`;
-  return `<table class="fwt">${rows.map(f => `<tr><td>${esc(fwName(f.component))}</td><td><code>${esc(f.version)}</code></td>
-    <td class="muted">${f.previous ? `updated ${esc(day(f.at))}` : `since ${esc(day(f.at))} or earlier`}</td></tr>`).join('')}</table>`;
+  return `<table class="fwt">${rows.map(f => `<tr><td>${esc(fwName(f.component))}
+    <div class="when">${f.previous ? `updated ${esc(day(f.at))}` : `since ${esc(day(f.at))} or earlier`}</div></td>
+    <td><code>${esc(f.version)}</code></td></tr>`).join('')}</table>`;
 }
 
 function firmwareHistory(history) {
@@ -124,18 +162,30 @@ function tile(k, v, sub, bar, warn) {
   return `<div class="card tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(sub || '')}</div>${b}</div>`;
 }
 
-function actionRow(a) {
+function actionButton(a) {
   const last = s.data.latest[a.cmd];
   const inFlight = busy(last);
   let res = '';
-  if (inFlight) res = `<div class="res busy">⟳ Sending to the robot…</div>`;
-  else if (last && last.status === 'error') res = `<div class="res err">⚠ Failed ${esc(ago(last.updated))}: ${esc(last.error || 'unknown error')}</div>`;
+  if (inFlight) res = `<div class="res busy">Sending…</div>`;
   else if (last && last.status === 'done') res = `<div class="res ok">✓ Sent ${esc(ago(last.updated))}</div>`;
-  const armed = s.armed === a.cmd;
-  const btns = armed
-    ? `<button class="btn go" data-go="${a.cmd}">${esc(a.confirm)}</button><button class="btn" data-cancel>Cancel</button>`
-    : `<button class="btn" data-arm="${a.cmd}" ${inFlight ? 'disabled' : ''}>${inFlight ? 'Sending…' : esc(a.button)}</button>`;
-  return `<div class="act"><div><div class="label">${esc(a.label)}</div><div class="desc">${esc(a.desc)}</div>${res}</div><div class="btns">${btns}</div></div>`;
+  return `<div class="act"><button class="btn act-btn" data-act="${a.cmd}" title="${esc(a.desc)}" ${inFlight ? 'disabled' : ''}>
+    <svg viewBox="0 0 24 24" aria-hidden="true">${a.icon}</svg><span>${esc(a.button)}</span></button>${res}</div>`;
+}
+
+function actionError(a) {
+  const last = s.data.latest[a.cmd];
+  if (!last || busy(last) || last.status !== 'error') return '';
+  return `<div class="act-err">⚠ ${esc(a.button)} failed ${esc(ago(last.updated))}: ${esc(last.error || 'unknown error')}</div>`;
+}
+
+function confirmAction(cmd) {
+  const a = ACTIONS.find(x => x.cmd === cmd);
+  s.confirming = cmd;
+  el('confirmTitle').textContent = a.title;
+  el('confirmDesc').textContent = a.desc;
+  el('confirmGo').textContent = a.confirm;
+  el('confirm').returnValue = '';
+  el('confirm').showModal();
 }
 
 // ---------------------------------------------------------------- data
@@ -149,7 +199,7 @@ async function load() {
   catch (e) { show(`<div class="card"><div class="empty">Couldn't load robot (${esc(e.message)})</div></div>`); return; }
   render();
   schedule();
-  if (!s.autoRefreshed && (!s.data.info_at || Date.now() / 1000 - s.data.info_at > 60)) {
+  if (CAN_EDIT && !s.autoRefreshed && (!s.data.info_at || Date.now() / 1000 - s.data.info_at > 60)) {
     s.autoRefreshed = true;
     send('refresh');
   }
@@ -176,22 +226,15 @@ async function send(cmd) {
 el('root').addEventListener('click', e => {
   const t = e.target;
   if (t.id === 'refreshNow') { send('refresh'); return; }
-  const arm = t.closest('[data-arm]'), go = t.closest('[data-go]');
-  if (arm) {
-    s.armed = arm.dataset.arm;
-    clearTimeout(s.armTimer);
-    s.armTimer = setTimeout(() => { s.armed = null; render(); }, 6000);
-    render();
-    el('root').querySelector('[data-go]')?.focus();
-  } else if (go) {
-    s.armed = null;
-    clearTimeout(s.armTimer);
-    send(go.dataset.go);
-  } else if (t.closest('[data-cancel]')) {
-    s.armed = null;
-    render();
-  }
+  const act = t.closest('[data-act]');
+  if (act) confirmAction(act.dataset.act);
 });
+el('confirm').addEventListener('close', () => {
+  if (el('confirm').returnValue === 'ok' && s.confirming) send(s.confirming);
+  s.confirming = null;
+});
+// a click on the dimmed backdrop lands on the <dialog> itself (the form fills its inside)
+el('confirm').addEventListener('click', e => { if (e.target === el('confirm')) el('confirm').close(); });
 window.addEventListener('lr-synced', load);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 load();

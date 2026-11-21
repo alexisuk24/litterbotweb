@@ -15,6 +15,11 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   Visits whose weight looks like a different cat (or that have no cat) are flagged
   **Check**; the *Needs review* filter lists just those. Keyboard: `↑/↓` move,
   `1–9` assign cat, `0` unknown, `u` undo.
+  Visits are marked **Ignored** when they weigh under 2.6 lb (too light to be a cat; any
+  cat Whisker assigned is removed there too, for visits from the last 7 days) or have no
+  cat and no camera clip. Ignored visits are left out of the Cats page, warnings, baselines
+  and vet reports; the *Ignored* filter lists them. Visits under 2.6 lb can't be given a
+  cat; for the others, assigning a cat yourself counts the visit again.
   Visits also show the camera's own cat recognition (from its AI detections around the
   visit) as a similarity score, e.g. "📷 74%", highlighted with the cat's name when the
   camera thinks it was a different cat.
@@ -25,15 +30,25 @@ robot snapshots (litter level, drawer level), and an index of every clip.
   whether Whisker accepted each one. Whisker only accepts changes to visits from the
   last 7 days, so older corrections are kept locally and not sent. Notes always stay local.
 - **Clips**: the calendar browser for downloaded clips.
-- **Analysis**: insights (visit-frequency changes, weight changes of 5% or more,
+- **Cats** (formerly Analysis): insights (visit-frequency changes, weight changes of 5% or more,
   cats that haven't visited, offline events), per-cat cards, visits per day, weight
   trend, time-of-day and weekday×hour patterns, clean cycles, litter/drawer levels,
   and a table of the robot's most common cat mix-ups based on your corrections.
+  Each cat also gets its own normal range, learned from the 30 days before the last 7:
+  visits per day, visit length and weight. The cat cards show it, and insights flag when
+  the last 7 days fall outside it, when a cat visits far more often than usual in 24 hours,
+  and when it has several unusually long visits (noting those with no waste detected,
+  which can mean straining).
+  **Report** on a cat card downloads a PDF for your vet over a date range you pick: a
+  summary against the cat's usual ranges, the weight trend, visits per day split by urine
+  and stool, anything unusual (long visits, bursts of visits, long gaps, stretches without
+  stool, weight outside the usual range), a day-by-day table and your notes on visits.
 
-Analysis uses your corrections.
+The Cats page uses your corrections.
 
 **Settings** also shows the app logs: the sync collector's log (downloads, activity
-sync, Whisker updates) and the web server's warnings and errors, with a
+sync, Whisker updates), the web server's warnings and errors, and the access log (who
+opened the app, and refused requests; see Access control), with a
 warnings-and-errors filter and a download button. The sync log has the same lines `docker logs`
 shows, but kept across container restarts.
 
@@ -58,15 +73,119 @@ works while Whisker still has the clip (about 7 days without Whisker+).
 
 **Settings** has the Whisker sync switch and the weight unit (kg by default, or lb).
 
+**Notifications** (Settings): push notifications through [Pushover](https://pushover.net).
+Enter your Pushover user key and an API token (create an application on pushover.net),
+optionally the address you open this app at so notifications link back to it, and use
+**Send test** to check. After each sync the collector sends anything new: each cat's
+warnings from the Cats page and robot problems (drawer full, other faults, litter low,
+offline). Each type of alert has its own checkbox, all on by default.
+
+**Robot IQ** forecasts when each robot's waste drawer will be full and its litter hopper
+will need refilling, shown on the robot's page and sent as notifications a chosen number
+of days ahead (Settings). The drawer forecast uses how much the fill level rises per clean
+cycle since it was last emptied and the robot's recent cycles per day, up to the level at
+which that robot reports the drawer full. The LR5 reports no hopper level, only Ready /
+Litter low / Empty, so the hopper forecast starts once a refill has been seen running down
+to Litter low: the dispenses that took set the capacity. Until then you're notified when
+the robot reports the hopper low or empty.
+A problem is sent once and again only if it clears and comes back; several new ones arrive
+as one notification. A burst of visits in 24 hours is sent at high priority.
+
 **Refresh** (top right on every page) runs a sync immediately instead of waiting for
 the next scheduled one. It's disabled while a sync is running and for 5 seconds after
 one finishes.
 
-**Retention**: clips older than `LR_RETENTION_DAYS` (14) are deleted after each sync,
-except clips marked **📌 Keep forever** (button under the player on the Events and Clips
-pages). The first time retention is enabled it waits `LR_RETENTION_GRACE_HOURS` (24)
-before deleting anything, so you can mark existing clips first. A banner shows when it
-starts. Deleted clips are never re-downloaded; their visit history stays.
+**Retention** (Settings > Clips) works in three steps. Clips stay **full quality** as
+downloaded for a number of days (14 by default, from `LR_RETENTION_DAYS`). After that
+they can be kept as a **small copy**, re-encoded at 360p (about 5% of the size), up to an
+age you choose. Past that (or straight away, with no small copy) the **video is removed**
+and only a picture of the event is kept: Whisker's thumbnail, or a frame saved from the
+clip when there isn't one. Clips marked **📌 Keep forever** (button under the player on the
+Events and Clips pages) are never shrunk or removed. Making either step sooner waits
+`LR_RETENTION_GRACE_HOURS` (24) before changing anything, with a banner, so you can mark
+clips first. Shrinking is limited to 10 minutes per sync; a backlog carries over. Clips
+whose video was removed are never re-downloaded; their visit history stays.
+
+**Health check**: the image has a Docker `HEALTHCHECK` that calls `/api/health` every
+minute. The container shows as *unhealthy* in `docker ps` when the web UI stops answering,
+the database can't be opened, a sync has been running for over 3 hours, or no sync has
+finished in three times the sync interval. A failing sync (e.g. Whisker being down) doesn't
+count, since restarting wouldn't help; `docker inspect` shows its last error. Docker only
+reports the status; to restart an unhealthy container automatically, use something like
+[autoheal](https://github.com/willfarrell/docker-autoheal).
+
+### Access control (Cloudflare Access)
+
+Off by default: anyone who can open the app can change everything. To give people roles,
+put the app behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/)
+and set these in `compose.yml`:
+
+| Variable | Example | |
+| --- | --- | --- |
+| `LR_AUTH_HEADER` | `Cf-Access-Authenticated-User-Email` | Header that names the user; turns roles on |
+| `LR_AUTH_TEAM_DOMAIN` | `yourteam.cloudflareaccess.com` | With `LR_AUTH_AUD`, verify Cloudflare's signed `Cf-Access-Jwt-Assertion` |
+| `LR_AUTH_AUD` | `4714c1358e65fe4b…` | The Access application's *Application Audience (AUD) Tag* |
+| `LR_ADMINS` | `you@example.com,partner@example.com` | Admins; everyone else is a Viewer |
+
+- **Admins** can do everything.
+- **Viewers** can see every page except Settings, start a sync and download vet reports.
+  They can't correct cats, use robot actions or the live view, keep or re-download clips,
+  or see settings and logs. The server refuses these, not just the page.
+- **Verifying the token** (set both `LR_AUTH_TEAM_DOMAIN` and `LR_AUTH_AUD`) makes the email
+  header impossible to forge: each request's signed token is checked against your team's
+  public keys and must name the same email. Without them the header is trusted as sent, so
+  only skip it if port 2287 can't be reached except through Cloudflare.
+- **Requests without an identity** have admin access when they don't come through Cloudflare
+  (direct access on your LAN), and are refused when they do (a hostname or path without
+  an Access policy). So anyone who can reach port 2287 directly is an admin; firewall it if
+  that isn't what you want. `/api/health` needs no identity, for Docker and Uptime Kuma.
+- These are environment variables on purpose: nothing in the web UI can change them. The
+  Settings page shows the current setup.
+- **Access log** (Settings > Logs > Access, `/data/logs/access.log`): one line when someone
+  starts a session, with their email or address, role, and country, and every refused
+  request, at most once every 10 minutes for the same person and page. A session is a
+  Cloudflare Access sign-in when the token is verified, otherwise the first request after
+  30 minutes idle. Live views are logged when they start and end, with the robot, how long
+  they ran and why they ended (stopped, the 10-minute limit, page hidden or closed, connection
+  lost, or the page stopped responding). Health checks (`/api/health`) aren't logged anywhere.
+
+### Monitoring with Uptime Kuma
+
+Add an **HTTP(s)** monitor pointed at the same `/api/health` endpoint. It answers 200 when
+everything's fine and 503 when something's wrong, so Kuma's default accepted status codes
+(200-299) already mark it down at the right times.
+
+| Field | Value |
+| --- | --- |
+| Monitor Type | HTTP(s) |
+| Friendly Name | Litter Robot |
+| URL | `http://<host>:2287/api/health` |
+| Heartbeat Interval | 60 seconds |
+| Retries | 2 |
+| Accepted Status Codes | 200-299 (the default) |
+
+Use the address Kuma can reach directly (for example the server's LAN address), not one
+behind a login page such as Cloudflare Access, or Kuma will be checking the login page.
+When the monitor goes down, open the URL to see why, for example:
+
+```json
+{"ok": false, "problem": "no sync has run for 5.0 hours (schedule: every 60 min)",
+ "last_sync": 1795232400.0, "last_error": null, "sync_running": false}
+```
+
+A sync that fails (for example because Whisker is down) keeps the monitor up, since nothing
+on this side can fix it; `last_error` shows the message. For alerts, Kuma's own
+notifications (including Pushover) work alongside the ones this app sends.
+
+If you run [AutoKuma](https://github.com/BigBoot/AutoKuma), which creates Kuma monitors from
+Docker labels, add these to the service in `compose.yml` instead, then set the interval and
+retries in Kuma:
+
+```yaml
+    labels:
+      kuma.litter-robot.http.name: "Litter Robot"
+      kuma.litter-robot.http.url: "http://<host>:2287/api/health"
+```
 
 Built on [pylitterbot](https://github.com/natekspencer/pylitterbot) 2025.9.0+, which
 already reverse-engineered the LR5 Pro camera APIs.
@@ -74,7 +193,7 @@ already reverse-engineered the LR5 Pro camera APIs.
 ## Run it
 
 ```bash
-pip install "pylitterbot>=2025.9.0"     # ffmpeg must be on PATH
+pip install "pylitterbot>=2025.9.0" flask aiohttp reportlab   # ffmpeg must be on PATH
 export LR_USERNAME=you@example.com LR_PASSWORD=...
 python lr_clips.py --dump ./api-dump    # first: look at what the API returns
 python lr_clips.py --out ./clips        # then: download the last 7 days
@@ -107,15 +226,27 @@ For a smaller image, keep only the driver your GPU needs with `--build-arg VA_DR
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `LR_DOWNLOAD_INTERVAL` | 3600 | Seconds between sync runs (clips and metadata) |
+| `LR_DOWNLOAD_INTERVAL` | 3600 | Seconds between sync runs (clips and metadata), until a schedule is picked under Settings > Sync schedule |
 | `LR_ACTIVITY_MAX_PAGES` | 50 | Pages of 100 activities to backfill on the first run |
 | `LR_HWACCEL` | auto | Encoder for clips that switch cameras mid-clip (front at 1080p, then globe at 720p), which are re-encoded at 1080p so they don't freeze: `auto` uses VAAPI when `/dev/dri` is mapped in (see `compose.yml`) and the CPU otherwise, `vaapi` warns if no device is found, `off` always uses the CPU |
 | `MATCH_BEFORE_S` / `MATCH_AFTER_S` | 600 / 180 | How far before/after a visit a clip still counts as that visit's clip |
-| `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything) |
+| `LR_RETENTION_DAYS` | 14 | Delete clips older than this unless kept (0 = keep everything), until a choice is made under Settings > Clips |
 | `LR_RETENTION_GRACE_HOURS` | 24 | Delay before the first deletions after retention is enabled |
 | `LR_WEB` | 1 | Serve the web UI on port 2287 from the collector's process (`0` = collector only; run `python web.py` separately) |
 | `DB_PATH` | /data/litterrobot.db | Database location |
-| `LOG_DIR` | /data/logs | Where `sync.log` and `web.log` are written (1 MB each, 3 rotated copies kept) |
+| `LOG_DIR` | /data/logs | Where `sync.log`, `web.log` and `access.log` are written (1 MB each, 3 rotated copies kept) |
+
+## Tests
+
+```bash
+pip install "pylitterbot>=2025.9.0" flask aiohttp reportlab "pyjwt[crypto]" pytest
+python -m pytest
+```
+
+Each test gets its own empty database and made-up robots, cats and visits; nothing touches
+Whisker or your data. The retention tests that encode video need `ffmpeg` and are skipped
+without it. GitHub Actions runs the tests on every push, and also checks that the browser
+scripts parse.
 
 ## How the API works
 

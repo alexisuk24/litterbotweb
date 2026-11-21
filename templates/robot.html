@@ -25,7 +25,10 @@
 .faults { display: grid; gap: .4rem; padding: 0 1.2rem 1rem; }
 .faults div { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .45rem .7rem; font-size: .85rem; }
 
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; }
+/* 8 tiles: 4 + 4 on wide screens, 2 per row below that */
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+@media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .tiles { gap: .75rem; } }
 .tile { padding: .9rem 1rem; }
 .tile .k { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .tile .v { font-size: 1.45rem; font-weight: 650; margin-top: .2rem; font-variant-numeric: tabular-nums; }
@@ -35,15 +38,17 @@
 .bar.warn i { background: var(--warn); }
 
 .cols { display: grid; grid-template-columns: 3fr 2fr; gap: 1rem; align-items: start; }
+.cols.solo { grid-template-columns: 1fr; }
+.col-main { display: grid; gap: 1rem; align-content: start; min-width: 0; }
 @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
 .panel h2 { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 1rem 1.1rem .25rem; }
-.act { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; padding: .9rem 1.1rem; border-top: 1px solid var(--border); }
-.act:first-of-type { border-top: 0; }
-.act .label { font-weight: 600; }
-.act .desc { font-size: .82rem; color: var(--muted); margin-top: .25rem; line-height: 1.5; }
-.act .res { font-size: .8rem; margin-top: .4rem; }
-.act .res.ok { color: var(--teal); } .act .res.err { color: var(--warn); } .act .res.busy { color: var(--text2); }
-.act .btns { display: flex; gap: .4rem; flex-shrink: 0; }
+.acts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; padding: .5rem 1.1rem 1rem; }
+.act { display: grid; gap: .35rem; text-align: center; align-content: start; }
+.act-btn { display: flex; align-items: center; justify-content: center; gap: .45rem; padding: .65rem .5rem; font-weight: 600; font-size: .9rem; }
+.act-btn svg { width: 20px; height: 20px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.act .res { font-size: .75rem; }
+.act .res.ok { color: var(--teal); } .act .res.busy { color: var(--text2); }
+.act-err { margin: 0 1.1rem 1rem; background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: .45rem .7rem; font-size: .82rem; }
 .btn.go { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn:disabled { opacity: .5; cursor: default; }
 .list { padding: .25rem 1.1rem 1rem; display: grid; gap: .35rem; font-size: .84rem; }
@@ -52,17 +57,32 @@
 .fw { padding: .25rem 1.1rem 1rem; font-size: .84rem; color: var(--text2); line-height: 1.6; }
 .fw code { font-family: ui-monospace, monospace; font-size: .78rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; word-break: break-all; }
 .fwt { border-collapse: collapse; width: 100%; }
-.fwt td { padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--border); vertical-align: baseline; }
-.fwt td:last-child { text-align: right; font-size: .78rem; padding-right: 0; }
+.fwt td { padding: .45rem .5rem .45rem 0; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+.fwt td:last-child { text-align: right; padding-right: 0; }
+.fwt td:last-child code { white-space: nowrap; word-break: normal; }
+.fwt .when { font-size: .76rem; color: var(--muted); }
 .fwh { margin-top: .8rem; display: grid; gap: .35rem; }
 .fwh-title { font-size: .7rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .fwh > div:not(.fwh-title):not(.fwh-empty) { display: flex; gap: .75rem; flex-wrap: wrap; }
 .fwh .t { color: var(--muted); min-width: 7.5rem; }
 .fwh-empty { font-size: .78rem; color: var(--muted); margin-top: .4rem; }
+.iq { padding: .25rem 1.1rem 1rem; display: grid; gap: .7rem; font-size: .84rem; }
+.iq-row { display: flex; gap: .75rem; }
+.iq-row .t { color: var(--muted); min-width: 7.5rem; }
+.iq-v { font-weight: 600; }
+.iq-v.warn { color: var(--warn); }
+.iq-d { color: var(--muted); font-size: .78rem; margin-top: .15rem; line-height: 1.45; }
 .fw .note { color: var(--muted); font-size: .8rem; margin-top: .5rem; }
 
 .live-bar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; padding: .25rem 1.1rem 1rem; }
 .live-bar .spacer { flex: 1; }
+/* before streaming, the button sits centered in a placeholder the size of the video */
+.live-bar.idle { flex-direction: column; justify-content: center; aspect-ratio: 16 / 9; margin: 0 1.1rem 1rem; padding: 1rem;
+                 border-radius: 8px; background: var(--surface2); }
+.live-bar.idle .spacer { display: none; }
+.live-bar.idle .msg { text-align: center; }
+.live-start { display: inline-flex; align-items: center; gap: .45rem; padding: .55rem 1.1rem; font-weight: 600; }
+.live-start svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .live-bar .msg { font-size: .82rem; color: var(--text2); }
 .live-bar .msg.err { color: var(--warn); }
 .live-video { position: relative; margin: 0 1.1rem 1rem; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
@@ -76,14 +96,16 @@
 <div class="page">
   <div class="wrap" id="root" data-serial="{{ serial }}">
     <div id="top" style="display:contents"><div class="card"><div class="empty">Loading…</div></div></div>
+    <div class="cols" id="cols" hidden>
+    <div class="col-main">
     <div class="card panel" id="live" hidden>
       <h2>Live view</h2>
       <div class="live-video" id="liveVideo" hidden>
         <video id="liveEl" autoplay muted playsinline></video>
         <span class="badge" id="liveBadge" hidden>LIVE</span>
       </div>
-      <div class="live-bar">
-        <button class="btn go" id="liveStart">Start live view</button>
+      <div class="live-bar idle" id="liveBar">
+        <button class="btn go live-start" id="liveStart"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg><span>Start live view</span></button>
         <button class="btn" id="liveStop" hidden>Stop</button>
         <div class="seg" id="liveView" role="radiogroup" aria-label="Camera" hidden>
           <button data-view="front" role="radio">Front</button><button data-view="globe" role="radio">Globe</button>
@@ -93,9 +115,19 @@
         <span class="msg" id="liveMsg" role="status"></span>
       </div>
     </div>
-    <div id="rest" style="display:contents"></div>
+    <div id="below" style="display:contents"></div>
+    </div>
+    <div id="side" style="display:grid;gap:1rem"></div>
+    </div>
   </div>
 </div>
+<dialog class="confirm" id="confirm" aria-labelledby="confirmTitle">
+  <form method="dialog">
+    <h3 id="confirmTitle"></h3>
+    <p id="confirmDesc"></p>
+    <div class="btns"><button class="btn" value="cancel">Cancel</button><button class="btn go" value="ok" id="confirmGo"></button></div>
+  </form>
+</dialog>
 <script src="{{ asset('common.js') }}"></script>
 <script src="{{ asset('robot.js') }}"></script>
 <script src="{{ asset('live.js') }}"></script>

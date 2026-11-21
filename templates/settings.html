@@ -39,6 +39,23 @@
 .logview .w { color: var(--warn); }
 .logview .e { color: var(--cat-7); }
 .logview .empty { color: var(--muted); font-family: inherit; }
+.keys { display: grid; gap: .6rem; margin-top: .75rem; }
+.keys label { display: grid; gap: .25rem; font-size: .78rem; color: var(--muted); }
+.keys input { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .45rem .6rem; font-size: .88rem; width: 100%; }
+.keys input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.keys .btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+.checks { display: grid; gap: .45rem; margin-top: .6rem; font-size: .88rem; }
+.checks label { display: flex; gap: .5rem; align-items: flex-start; cursor: pointer; }
+.checks label span { color: var(--muted); font-size: .8rem; }
+.checks .group { font-size: .72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: .4rem; }
+.checks input { margin-top: .2rem; flex-shrink: 0; }
+.lead { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; font-size: .85rem; color: var(--text2); }
+.lead select { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .3rem .5rem; }
+.status.ok { color: var(--teal); }
+/* segmented controls and pickers keep their size; on phones they go under the description */
+.row .seg { flex-shrink: 0; }
+@media (max-width: 600px) { .row.stack { flex-direction: column; gap: .75rem; } }
+select.pick { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .4rem .55rem; font-size: .88rem; flex-shrink: 0; }
 code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(--surface2); padding: .05rem .3rem; border-radius: 4px; }
 </style>
 </head>
@@ -48,6 +65,15 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
   <div class="settings">
     <div class="card">
       <h2>Whisker app</h2>
+      <div class="row stack">
+        <div>
+          <div class="label" id="intervalLabel">Sync schedule</div>
+          <div class="desc">How often activity, clips and robot status are fetched from Whisker; notifications are
+            checked after each sync. Applies straight away. Use Refresh to sync sooner.</div>
+          <div class="status" id="intervalStatus"></div>
+        </div>
+        <select id="interval" class="pick" aria-labelledby="intervalLabel" disabled></select>
+      </div>
       <div class="row">
         <div>
           <div class="label" id="wbLabel">Send cat corrections to Whisker</div>
@@ -59,7 +85,7 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
         </div>
         <label class="switch"><input type="checkbox" id="wbToggle" role="switch" aria-labelledby="wbLabel" disabled><span class="track"></span></label>
       </div>
-      <div class="row">
+      <div class="row stack">
         <div>
           <div class="label" id="tzLabel">Clip list timezone</div>
           <div class="desc">The timezone sent when asking Whisker for clips; dates are read as days in it.
@@ -74,8 +100,83 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
     </div>
 
     <div class="card">
-      <h2>Display</h2>
+      <h2>Notifications</h2>
       <div class="row">
+        <div>
+          <div class="label" id="ntLabel">Pushover notifications</div>
+          <div class="desc">A push notification when a cat gets a new warning on the Cats page, or a robot has a
+            problem. Checked after each sync. Each problem is sent once; it's sent again only if it clears and
+            comes back. Several new ones at the same sync arrive as one notification.</div>
+          <div class="status" id="ntStatus"></div>
+        </div>
+        <label class="switch"><input type="checkbox" id="ntToggle" role="switch" aria-labelledby="ntLabel" disabled><span class="track"></span></label>
+      </div>
+      <div class="row">
+        <div style="flex:1;min-width:0">
+          <div class="label">Pushover keys</div>
+          <div class="desc">Your <b>User Key</b> is on your <a href="https://pushover.net" target="_blank" rel="noopener" style="color:inherit">pushover.net</a>
+            dashboard. For the <b>API token</b>, create an application there (any name, e.g. Litter Robot).
+            Saved keys aren't shown again; leave a field blank to keep it.</div>
+          <form class="keys" id="ntForm" autocomplete="off">
+            <label>User key<input id="ntUser" spellcheck="false" autocapitalize="off"></label>
+            <label>API token<input id="ntToken" type="password" spellcheck="false" autocapitalize="off"></label>
+            <label>Link in notifications (optional)<input id="ntLink" type="url" spellcheck="false" autocapitalize="off"></label>
+            <div class="btns"><button class="btn" type="submit">Save</button><button class="btn" type="button" id="ntTest">Send test</button></div>
+          </form>
+          <div class="status" id="ntKeyStatus"></div>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label">What to send</div>
+          <div class="checks" id="ntCats"></div>
+          <div class="checks" id="ntRobots"></div>
+          <div class="checks" id="ntIq"></div>
+          <label class="lead">Warn
+            <select id="ntLead"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option><option value="5">5 days</option></select>
+            before the drawer is full or the hopper runs low</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Clips</h2>
+      <div class="row stack">
+        <div>
+          <div class="label" id="retentionLabel">Full quality for</div>
+          <div class="desc">Clips stay exactly as downloaded for this long. Clips marked 📌 Keep forever always do.</div>
+          <div class="status" id="retentionStatus"></div>
+        </div>
+        <select id="retention" class="pick" aria-labelledby="retentionLabel" disabled></select>
+      </div>
+      <div class="row stack">
+        <div>
+          <div class="label" id="smallLabel">Then a small copy until</div>
+          <div class="desc">After that, the clip is re-encoded at 360p, about 5% of the size. Once a clip is past
+            this age (or right away, with no small copy) its video is removed and only a picture of the event is
+            kept; the visit's history stays. Making either step sooner waits 24 hours before changing anything,
+            so you can mark clips to keep first.</div>
+        </div>
+        <select id="small" class="pick" aria-labelledby="smallLabel" disabled></select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Access</h2>
+      <div class="row">
+        <div>
+          <div class="label">Who can change things</div>
+          <div class="desc" id="accessDesc">—</div>
+          <div class="status" id="accessStatus"></div>
+        </div>
+      </div>
+      <div class="foot">Set with <code>LR_AUTH_HEADER</code>, <code>LR_AUTH_TEAM_DOMAIN</code>, <code>LR_AUTH_AUD</code> and
+        <code>LR_ADMINS</code> in <code>compose.yml</code>, so they can't be changed from here.</div>
+    </div>
+
+    <div class="card">
+      <h2>Display</h2>
+      <div class="row stack">
         <div>
           <div class="label" id="unitLabel">Weight unit</div>
           <div class="desc">Used for cat weights, charts and insights everywhere in the app.</div>
@@ -87,18 +188,12 @@ code { font-family: ui-monospace, monospace; font-size: .8rem; background: var(-
       </div>
     </div>
 
-    <div class="card">
-      <h2>Set in compose.yml</h2>
-      <div class="row"><div><div class="label">Sync schedule</div><div class="desc">How often activity and clips are fetched (<code>LR_DOWNLOAD_INTERVAL</code>). Use Refresh to sync sooner.</div></div><div class="value" id="interval">—</div></div>
-      <div class="row"><div><div class="label">Clip retention</div><div class="desc">Clips older than this are deleted unless marked Keep forever (<code>LR_RETENTION_DAYS</code>, 0 = keep all).</div></div><div class="value" id="retention">—</div></div>
-      <div class="foot">Change these in <code>compose.yml</code>, then run <code>docker compose up -d</code>.</div>
-    </div>
 
     <div class="card">
       <h2>Logs</h2>
       <div class="logbar">
         <div class="seg" id="logSeg" role="radiogroup" aria-label="Which log">
-          <button data-src="sync" role="radio" title="Downloads, activity sync, Whisker updates">Sync</button><button data-src="web" role="radio" title="Web server warnings and errors">Web</button>
+          <button data-src="sync" role="radio" title="Downloads, activity sync, Whisker updates">Sync</button><button data-src="web" role="radio" title="Web server warnings and errors">Web</button><button data-src="access" role="radio" title="Who opened the app, and refused requests">Access</button>
         </div>
         <label><input type="checkbox" id="logProblems"> Warnings &amp; errors only</label>
         <span class="spacer"></span>
@@ -136,9 +231,33 @@ function paint(st) {
     b.setAttribute('aria-checked', b.dataset.tz === st.clip_tz);
   });
   el('tzSeg').querySelector('[data-tz="server"]').title = st.server_tz;
-  el('interval').textContent =st.sync_interval ? every(st.sync_interval) : 'Once at startup';
+  const iv = el('interval');
+  if (!iv.options.length) iv.innerHTML = st.sync_intervals.map(s => `<option value="${s}">${every(s)}</option>`).join('');
+  iv.value = String(st.sync_interval);
+  if (iv.value !== String(st.sync_interval)) {  // LR_DOWNLOAD_INTERVAL set to something not in the list
+    iv.insertAdjacentHTML('afterbegin', `<option value="${st.sync_interval}">${every(st.sync_interval)}</option>`);
+    iv.value = String(st.sync_interval);
+  }
+  iv.disabled = false;
+  paintNotify(st.notify);
+  paintAccess(st.access);
   const r = st.retention || {};
-  el('retention').textContent = r.days ? `${r.days} days` : 'Keep everything';
+  const rs = el('retention');
+  const label = d => d ? `${d} days` : 'Forever';
+  const choices = st.retention_choices.filter(d => !d || d >= (r.minimum || 0));
+  if (!choices.includes(r.days)) choices.push(r.days);  // LR_RETENTION_DAYS set to something else
+  rs.innerHTML = choices.sort((a, b) => (a || 1e9) - (b || 1e9)).map(d => `<option value="${d}">${label(d)}</option>`).join('');
+  rs.value = String(r.days);
+  rs.disabled = false;
+  const sm = el('small');
+  const smallLabel = c => c === 'none' ? 'No small copy' : c === 'forever' ? 'Forever' : `${c} days old`;
+  sm.innerHTML = st.small_choices.filter(c => typeof c !== 'number' || c > r.days)
+    .map(c => `<option value="${c}">${smallLabel(c)}</option>`).join('');
+  sm.value = sm.querySelector(`option[value="${r.small_setting}"]`) ? r.small_setting : 'none';
+  sm.disabled = !r.days;  // with full quality forever there's nothing to shrink
+  const starts = r.days && r.starts_at && r.starts_at * 1000 > Date.now()
+    ? `Deleting starts ${new Date(r.starts_at * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : '';
+  if (!el('retentionStatus').classList.contains('warn')) el('retentionStatus').textContent = starts;
 }
 
 el('wbToggle').addEventListener('change', async e => {
@@ -152,6 +271,40 @@ el('wbToggle').addEventListener('change', async e => {
     e.target.disabled = false;
     el('wbStatus').textContent = "Couldn't save. Try again.";
     el('wbStatus').className = 'status warn';
+  }
+});
+
+el('retention').addEventListener('change', async e => {
+  el('retentionStatus').className = 'status';
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ retention_days: Number(e.target.value) }) }));
+  } catch {
+    el('retentionStatus').textContent = "Couldn't save. Try again.";
+    el('retentionStatus').className = 'status warn';
+  }
+});
+
+el('small').addEventListener('change', async e => {
+  const v = e.target.value;
+  el('retentionStatus').className = 'status';
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ retention_small: /^\d+$/.test(v) ? Number(v) : v }) }));
+  } catch {
+    el('retentionStatus').textContent = "Couldn't save. Try again.";
+    el('retentionStatus').className = 'status warn';
+  }
+});
+
+el('interval').addEventListener('change', async e => {
+  try {
+    paint(await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ sync_interval: Number(e.target.value) }) }));
+    el('intervalStatus').textContent = '';
+  } catch {
+    el('intervalStatus').textContent = "Couldn't save. Try again.";
+    el('intervalStatus').className = 'status warn';
   }
 });
 
@@ -180,6 +333,125 @@ el('tzSeg').addEventListener('click', async e => {
     el('tzStatus').className = 'status warn';
   }
 });
+
+// ---- access (read-only: set in compose.yml)
+function paintAccess(a) {
+  const d = el('accessDesc'), st = el('accessStatus');
+  if (!a.header) {
+    d.textContent = 'Everyone who can open this app can change everything. Set LR_AUTH_HEADER (e.g. to ' +
+      'Cf-Access-Authenticated-User-Email) to give Cloudflare Access users Admin or Viewer roles.';
+    st.textContent = '';
+    return;
+  }
+  d.innerHTML = `Users are identified by the <code>${esc(a.header)}</code> header` +
+    (a.verify ? `, checked against Cloudflare Access's signed token for <code>${esc(a.team)}</code>.`
+              : '. Without LR_AUTH_TEAM_DOMAIN and LR_AUTH_AUD it\'s trusted as sent, so only use this if the app is reachable through Cloudflare alone.') +
+    ` Admins: ${a.admins.length ? a.admins.map(esc).join(', ') : 'none listed'}; everyone else can view but not change anything.` +
+    ' Requests without the header from outside Cloudflare (your LAN) have admin access.';
+  st.textContent = a.you.email ? `You're signed in as ${a.you.email} (${a.you.role === 'admin' ? 'Admin' : 'Viewer'}).`
+                               : 'You have no identity on this request (direct access), so you have admin access.';
+  st.className = 'status';
+  if (a.direct) {
+    const when = new Date(a.direct.at * 1000).toLocaleString();
+    st.textContent += ` ⚠ The app was opened directly, without Cloudflare, from ${a.direct.addr || 'an unknown address'} at ${when},`
+      + ' which gives admin access. To allow only Cloudflare, remove the port mapping from compose.yml or firewall port 2287.';
+    st.className = 'status warn';
+  }
+}
+
+// ---- notifications
+function paintNotify(n) {
+  const keys = n.user_hint && n.token_hint;
+  el('ntToggle').checked = n.enabled;
+  el('ntToggle').disabled = !keys;
+  requestAnimationFrame(() => el('ntToggle').parentElement.classList.add('ready'));
+  el('ntUser').placeholder = n.user_hint ? `Saved, ends in ${n.user_hint}` : '30 letters and numbers';
+  el('ntToken').placeholder = n.token_hint ? `Saved, ends in ${n.token_hint}` : '30 letters and numbers';
+  el('ntLink').placeholder = location.origin;
+  if (document.activeElement !== el('ntLink')) el('ntLink').value = n.link || '';
+  el('ntLead').value = String(n.lead_days);
+  for (const [id, group, title] of [['ntCats', 'cats', 'Cats'], ['ntRobots', 'robots', 'Robots'], ['ntIq', 'iq', 'Robot IQ']]) {
+    el(id).innerHTML = `<div class="group">${title}</div>` + n.categories.filter(c => c.group === group).map(c =>
+      `<label><input type="checkbox" data-cat="${esc(c.id)}"${c.on ? ' checked' : ''}><div>${esc(c.label)}` +
+      `${c.detail ? ` <span>${esc(c.detail)}</span>` : ''}</div></label>`).join('');
+  }
+  let msg = '', cls = 'status';
+  if (!keys) msg = 'Add your Pushover keys below to turn this on.';
+  else if (n.last_error) { msg = `Last attempt failed: ${n.last_error}`; cls += ' warn'; }
+  else if (n.last_sent) msg = `Last notification sent ${new Date(n.last_sent * 1000).toLocaleString()}`;
+  el('ntStatus').textContent = msg;
+  el('ntStatus').className = cls;
+}
+
+async function saveNotify(notify) {
+  const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                           body: JSON.stringify({ notify }) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || "Couldn't save. Try again.");
+  paint(body);
+  return body;
+}
+
+function keyStatus(text, cls = '') {
+  el('ntKeyStatus').textContent = text;
+  el('ntKeyStatus').className = 'status' + (cls ? ' ' + cls : '');
+}
+
+el('ntForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    await saveNotify({ user: el('ntUser').value.trim(), token: el('ntToken').value.trim(),
+                       link: el('ntLink').value.trim() });
+    el('ntUser').value = el('ntToken').value = '';
+    keyStatus('Saved.', 'ok');
+  } catch (err) { keyStatus(err.message, 'warn'); }
+});
+
+el('ntTest').addEventListener('click', async () => {
+  el('ntTest').disabled = true;
+  keyStatus('Sending…');
+  try {
+    const r = await fetch('/api/notify/test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: el('ntUser').value.trim(), token: el('ntToken').value.trim() }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || 'Test failed.');
+    keyStatus('Sent. Check your phone.', 'ok');
+  } catch (err) { keyStatus(err.message, 'warn'); }
+  el('ntTest').disabled = false;
+});
+
+el('ntToggle').addEventListener('change', async e => {
+  const want = e.target.checked;
+  e.target.disabled = true;
+  try { await saveNotify({ enabled: want }); }
+  catch (err) {
+    e.target.checked = !want;
+    e.target.disabled = false;
+    el('ntStatus').textContent = err.message;
+    el('ntStatus').className = 'status warn';
+  }
+});
+
+el('ntLead').addEventListener('change', async e => {
+  try { await saveNotify({ lead_days: Number(e.target.value) }); }
+  catch (err) {
+    el('ntStatus').textContent = err.message;
+    el('ntStatus').className = 'status warn';
+  }
+});
+
+for (const id of ['ntCats', 'ntRobots', 'ntIq']) {
+  el(id).addEventListener('change', async e => {
+    const cat = e.target.dataset.cat;
+    if (!cat) return;
+    try { await saveNotify({ categories: { [cat]: e.target.checked } }); }
+    catch (err) {
+      e.target.checked = !e.target.checked;
+      el('ntStatus').textContent = err.message;
+      el('ntStatus').className = 'status warn';
+    }
+  });
+}
 
 let logSrc = store.get('lr-log', 'sync');
 let logLines = [];

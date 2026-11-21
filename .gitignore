@@ -5,3 +5,7 @@ __pycache__/
 .env
 s3-check/
 .DS_Store
+clips/
+data/
+.venv/
+.pytest_cache/
