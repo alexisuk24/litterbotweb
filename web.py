@@ -378,8 +378,9 @@ def api_health():
     try:
         conn = db()
         conn.execute("SELECT 1").fetchone()
-    except Exception as err:
-        return jsonify(ok=False, problem=f"database: {err}"), 503
+    except Exception:
+        app.logger.exception("Health check: the database didn't open")
+        return jsonify(ok=False, problem="database: didn't open (details in the container log)"), 503
     started, finished = _fstate("sync_started"), _fstate("sync_finished")
     running = lr_db.get_state(conn, "sync_running") == "1"
     interval = lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
