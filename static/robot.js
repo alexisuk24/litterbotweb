@@ -65,12 +65,17 @@ function render() {
     ${ACTIONS.map(actionError).join('')}
   </div>` : ''}
   <div class="tiles">
-    ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
+    ${tile('Waste drawer', pct(i.drawer_level),
+           d.iq?.drawer?.cycles_since != null ? `${d.iq.drawer.cycles_since} cycles since emptied` : 'not seen emptied yet',
+           i.drawer_level, drawerWarn)}
     ${tile('Litter level', pct(i.litter_level), titleCase(i.litter_state), i.litter_level, litterWarn)}
     ${tile('Last 24 hours', `${d.last_24h.visits} visits`, `${d.last_24h.cycles} clean cycles · last visit ${ago(d.last_visit)}`)}
     ${tile('Clean delay', i.wait_minutes != null ? `${i.wait_minutes} min` : '—', 'after a cat leaves')}
     ${tile('Filter', i.next_filter ? new Date(i.next_filter * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '—', `next replacement · ${i.filter_cycles ?? '—'} cycles on this one`)}
-    ${tile('Total cycles', i.total_cycles ?? '—', i.scoops_saved != null ? `${i.scoops_saved.toLocaleString()} scoops saved` : '')}
+    ${tile('Total cycles', i.lifetime_cycles != null ? i.lifetime_cycles.toLocaleString() : '—',
+           i.clean_cycles != null && i.clean_cycles !== i.lifetime_cycles
+             ? `${i.clean_cycles.toLocaleString()} since the counter was reset in the Whisker app`
+             : 'clean cycles, all time')}
     ${tile('Wi-Fi', wq, wd)}
     ${tile('Last seen', ago(i.last_seen), when(i.last_seen))}
   </div>`, `

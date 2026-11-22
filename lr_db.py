@@ -137,6 +137,16 @@ CREATE TABLE IF NOT EXISTS firmware_history (
     seen_at      REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS firmware_history_robot ON firmware_history (robot_serial, component, id);
+-- The clean-cycle odometer can be reset in the Whisker app; each reset starts a new row here,
+-- so the lifetime count is the rows' last_count added up.
+CREATE TABLE IF NOT EXISTS cycle_counters (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    robot_serial TEXT NOT NULL,
+    started_at   REAL NOT NULL,
+    last_count   INTEGER NOT NULL,
+    updated_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cycle_counters_robot ON cycle_counters (robot_serial, id);
 CREATE TABLE IF NOT EXISTS robot_commands (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     robot_serial TEXT NOT NULL,
@@ -532,7 +542,32 @@ ROBOT_COMMANDS = {
 }
 
 
+def record_clean_cycles(conn, serial: str, count: int) -> int:
+    """Track the robot's clean-cycle odometer. A count lower than the last one means it was
+    reset in the Whisker app, which starts a new counter. Returns the lifetime count: every
+    counter added up."""
+    now = time.time()
+    row = conn.execute("SELECT id, last_count FROM cycle_counters WHERE robot_serial = ? ORDER BY id DESC LIMIT 1",
+                       (serial,)).fetchone()
+    if row and count >= row["last_count"]:
+        if count != row["last_count"]:
+            conn.execute("UPDATE cycle_counters SET last_count = ?, updated_at = ? WHERE id = ?", (count, now, row["id"]))
+    else:
+        if row:
+            logging.getLogger("lr_db").info("%s: clean-cycle counter reset in the Whisker app (%d -> %d); "
+                                               "starting a new one", serial, row["last_count"], count)
+        conn.execute("INSERT INTO cycle_counters (robot_serial, started_at, last_count, updated_at) VALUES (?, ?, ?, ?)",
+                     (serial, now, count, now))
+    return lifetime_cycles(conn, serial)
+
+
+def lifetime_cycles(conn, serial: str) -> int | None:
+    return conn.execute("SELECT SUM(last_count) FROM cycle_counters WHERE robot_serial = ?", (serial,)).fetchone()[0]
+
+
 def set_robot_info(conn, serial: str, info: dict) -> None:
+    if info.get("clean_cycles") is not None:
+        info = info | {"lifetime_cycles": record_clean_cycles(conn, serial, info["clean_cycles"])}
     conn.execute("UPDATE robots SET info = ?, info_at = ? WHERE serial = ?",
                  (json.dumps(info, default=str), time.time(), serial))
     record_firmware(conn, serial, info.get("firmware"))

@@ -20,7 +20,8 @@ def robot(count, status=LitterBoxStatus.READY, serial="LR5-TEST-1", activities=(
     async def get_activities(limit=100, offset=0):
         return list(activities)[offset:offset + limit]
     return SimpleNamespace(serial=serial, name="Marvin", cycle_count=count, status=status,
-                           has_camera=True, get_activities=get_activities)
+                           has_camera=True, get_activities=get_activities,
+                           to_dict=lambda: {"state": {"odometerCleanCycles": count}})
 
 
 def test_a_cycle_counts_once_it_finishes(env):

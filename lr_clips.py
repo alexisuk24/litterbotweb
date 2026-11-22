@@ -363,6 +363,13 @@ def _epoch(dt):
     return dt.timestamp() if dt else None
 
 
+def clean_cycles(robot) -> int | None:
+    """The robot's clean-cycle odometer (pylitterbot's cycle_count), or None when the robot
+    didn't report it; cycle_count reads a missing value as 0, which would look like a reset."""
+    value = (_safe(lambda: robot.to_dict().get("state")) or {}).get("odometerCleanCycles")
+    return _safe(lambda: int(value)) if value is not None else None
+
+
 def robot_info(robot: LitterRobot5) -> dict:
     """Snapshot of the robot's state for the Robots page."""
     status = _safe(lambda: robot.status)
@@ -394,7 +401,7 @@ def robot_info(robot: LitterRobot5) -> dict:
         "litter_state": getattr(level_state, "name", None),
         "hopper": _safe(lambda: robot.hopper_status_text),
         "drawer_level": _safe(lambda: robot.waste_drawer_level),
-        "cycles_since_empty": _safe(lambda: robot.cycle_count),
+        "clean_cycles": clean_cycles(robot),  # set_robot_info adds lifetime_cycles from this
         "total_cycles": _safe(lambda: robot.odometer_empty_cycles),
         "filter_cycles": _safe(lambda: robot.odometer_filter_cycles),
         "next_filter": _epoch(_safe(lambda: robot.next_filter_replacement_date)),
@@ -416,16 +423,17 @@ def sync_robot(db, robot: LitterRobot5) -> None:
         camera_device_id=(_safe(lambda: robot.camera_metadata) or {}).get("deviceId"),
         raw=robot.to_dict(),
     )
+    lr_db.set_robot_info(db, robot.serial, robot_info(robot))
     lr_db.add_snapshot(
         db, robot_serial=robot.serial,
         litter_level=_safe(lambda: robot.litter_level),
         waste_drawer_level=_safe(lambda: robot.waste_drawer_level),
         scale_weight=_safe(lambda: robot.pet_weight),
-        cycle_count=_safe(lambda: robot.cycle_count),
+        # the lifetime count, so Robot IQ's cycles-per-level slope carries on across a reset
+        cycle_count=lr_db.lifetime_cycles(db, robot.serial) if clean_cycles(robot) is not None else None,
         status=getattr(status, "text", None) or (str(status) if status else None),
         hopper_status=getattr(_safe(lambda: robot.hopper_status), "name", None),
     )
-    lr_db.set_robot_info(db, robot.serial, robot_info(robot))
 
 
 async def sync_activities(db, robot: LitterRobot5, max_pages: int) -> int:
@@ -973,7 +981,7 @@ def cycle_finished(db, robot) -> bool:
     The count is kept in the database so a restart doesn't count a cycle twice; the first
     look only records it. A count that fell was reset in the Whisker app, so it counts
     from 0 again: anything above 0 is a cycle since the reset."""
-    count = _safe(lambda: robot.cycle_count)
+    count = clean_cycles(robot)
     if count is None:
         return False
     key = f"cycle_count:{robot.serial}"

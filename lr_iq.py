@@ -57,6 +57,17 @@ def full_level(conn, serial: str, snaps, info: dict | None) -> float:
     return min(100.0, statistics.median(levels)) if levels else 100.0
 
 
+def cycles_since_emptied(period, info: dict | None) -> int | None:
+    """Clean cycles since the drawer was emptied, from the lifetime count (snapshots store it, so a
+    reset of Whisker's counter doesn't matter). Neither Whisker nor the robot reports this. The first
+    snapshot after emptying comes at the next sync, so cycles in between aren't counted."""
+    counts = [s["cycle_count"] for s in period if s["cycle_count"] is not None]
+    if not counts:
+        return None
+    now = max(counts[-1], (info or {}).get("lifetime_cycles") or 0)
+    return now - counts[0]
+
+
 def drawer_forecast(conn, serial: str, info: dict | None, now: float | None = None) -> dict | None:
     now = now or time.time()
     snaps = conn.execute(
@@ -71,7 +82,8 @@ def drawer_forecast(conn, serial: str, info: dict | None, now: float | None = No
     period = snaps[start:]
     level = period[-1]["waste_drawer_level"]
     full = full_level(conn, serial, snaps, info)
-    out = {"level": level, "full_level": full, "since": period[0]["ts"] if start else None}
+    out = {"level": level, "full_level": full, "since": period[0]["ts"] if start else None,
+           "cycles_since": cycles_since_emptied(period, info) if start else None}
     if level >= full or (info and "Waste drawer full" in (info.get("faults") or [])):
         return out | {"state": "full"}
     pts = [(s["cycle_count"], s["waste_drawer_level"]) for s in period if s["cycle_count"] is not None]
