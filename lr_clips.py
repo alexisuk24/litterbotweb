@@ -21,8 +21,8 @@ Files are saved as: {out}/{RobotName}/{RobotName}_{YYYY-MM-DD}_{HH-MM-SS}.mp4
 
 While it keeps running, it also checks each robot's status every --status-interval
 seconds. When a clean cycle finishes it fetches that robot's activity log at once (and
-sends a visit notification, if switched on), then its camera detections and newest
-clips a few minutes later, once Whisker has processed them.
+sends a visit notification, if switched on), then looks again 1, 5 and 15 minutes
+later for anything Whisker lists late: the visit itself, its clip and camera detections.
 """
 
 from __future__ import annotations
@@ -939,13 +939,17 @@ async def outbox_worker(args: argparse.Namespace, account: Account, wake: asynci
 
 MIN_STATUS_INTERVAL = 30  # pylitterbot's own LR5 polling interval; no need to ask more often
 STATUS_BACKOFF_MAX = 300
-FOLLOWUP_DELAYS = (240, 540)  # Whisker's camera detections and clips lag the visit by minutes
+# After a cycle: the activity can take ~30 s to be listed and the clip is usually listed
+# already (it starts when the cat arrives, before the cycle's wait), so look again after a
+# minute; Whisker's camera detections trickle in over the following quarter hour.
+FOLLOWUP_DELAYS = (60, 300, 900)
 
 
 def cycle_finished(db, robot) -> bool:
-    """Whether the robot finished a clean cycle since we last looked: its cycle count went up
-    and it's no longer cycling. The count is kept in the database so a restart doesn't count
-    a cycle twice; the first look, and a count that fell (drawer reset), only record it."""
+    """Whether the robot finished a clean cycle since we last looked: its cycle count (the
+    lifetime odometer, which goes up as the cycle ends) went up and it's no longer cycling.
+    The count is kept in the database so a restart doesn't count a cycle twice; the first
+    look, and a count that fell (say, a replaced robot), only record it."""
     count = _safe(lambda: robot.cycle_count)
     if count is None:
         return False
@@ -1040,7 +1044,8 @@ async def run_followups(account: Account, args: argparse.Namespace) -> None:
         if not robot:
             continue
         try:
-            await sync_activities(db, robot, 1)  # Whisker may have matched the cat since
+            await sync_activities(db, robot, 1)  # the visit may not have been listed yet, or rematched since
+            await asyncio.to_thread(notify_visits, args.db, robot.serial)  # sends only visits not sent yet
             events = await robot.get_camera_client().get_events(limit=50)
             found = lr_db.upsert_detections(db, robot.serial, events)
             db.commit()

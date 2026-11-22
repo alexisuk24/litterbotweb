@@ -126,9 +126,9 @@ as one notification. A burst of visits in 24 hours is sent at high priority.
 
 Between syncs, the collector checks each robot's status every minute (one small request per
 robot, as Home Assistant's Litter-Robot integration does). When a clean cycle finishes it fetches
-that robot's activity log straight away, then its camera detections and newest clips about 4 and
-9 minutes later, once Whisker has processed them. So visits appear within a minute or two and
-their clips soon after, whatever the sync schedule. The scheduled sync still catches anything
+that robot's activity log straight away, then looks again 1, 5 and 15 minutes later for its
+newest clips, camera detections and anything else Whisker lists late. So visits and their clips
+appear within a minute or two of the cycle finishing, whatever the sync schedule. The scheduled sync still catches anything
 this misses. Set `LR_STATUS_INTERVAL=0` to turn it off.
 
 **Refresh** (top right on every page) runs a sync immediately instead of waiting for

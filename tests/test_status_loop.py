@@ -30,7 +30,7 @@ def test_a_cycle_counts_once_it_finishes(env):
     assert lr_clips.cycle_finished(env.db, robot(11))
     assert not lr_clips.cycle_finished(env.db, robot(11))  # not again, including after a restart
     assert not lr_clips.cycle_finished(lr_db.connect(), robot(11))
-    assert not lr_clips.cycle_finished(env.db, robot(0))  # drawer reset: the count starts again
+    assert not lr_clips.cycle_finished(env.db, robot(0))  # a count that fell (a replaced robot) starts again
     assert lr_clips.cycle_finished(env.db, robot(1))
 
 
