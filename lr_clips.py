@@ -918,14 +918,16 @@ async def outbox_worker(args: argparse.Namespace, account: Account, wake: asynci
 
 async def wait_for_next_run(db, default_interval: int, wake: asyncio.Event | None) -> str:
     """Sleep until the next scheduled run, waking early for a manual refresh from the web UI.
-    The interval is re-read while waiting, so a change on the Settings page applies at once."""
-    finished = time.monotonic()
+    The interval counts from when the last sync started, so syncs keep to the schedule
+    however long each takes. It's re-read while waiting, so a change on the Settings page
+    applies at once."""
     while True:
+        started = float(lr_db.get_state(db, "sync_started") or 0)
         requested = float(lr_db.get_state(db, "refresh_requested") or 0)
-        if requested > float(lr_db.get_state(db, "sync_started") or 0):
+        if requested > started:
             LOG.info("Manual refresh requested")
             return "manual"
-        remaining = finished + lr_db.sync_interval(db, default_interval) - time.monotonic()
+        remaining = started + lr_db.sync_interval(db, default_interval) - time.time()
         if remaining <= 0:
             return "scheduled"
         await wait_for_wake(wake, max(0.1, remaining), poll=2)

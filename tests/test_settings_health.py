@@ -28,7 +28,7 @@ def test_settings_page_shows_the_app_version(env, monkeypatch):
 
 def test_collector_picks_up_a_shorter_interval_while_waiting(env, monkeypatch):
     monkeypatch.setattr(lr_db, "SYNC_INTERVALS", lr_db.SYNC_INTERVALS + (1,))
-    env.state(sync_interval=86400, refresh_requested=0)
+    env.state(sync_interval=86400, refresh_requested=0, sync_started=time.time())
 
     async def run():
         wake = asyncio.Event()
@@ -37,6 +37,16 @@ def test_collector_picks_up_a_shorter_interval_while_waiting(env, monkeypatch):
         env.state(sync_interval=1)
         wake.set()
         return await asyncio.wait_for(task, 5)
+
+    assert asyncio.run(run()) == "scheduled"
+
+
+def test_next_sync_counts_from_when_the_last_one_started(env):
+    # a 15-minute schedule whose last sync started 15 minutes ago and took a minute: due now
+    env.state(sync_interval=900, refresh_requested=0, sync_started=time.time() - 900, sync_finished=time.time() - 840)
+
+    async def run():
+        return await asyncio.wait_for(lr_clips.wait_for_next_run(env.db, 3600, asyncio.Event()), 1)
 
     assert asyncio.run(run()) == "scheduled"
 
