@@ -543,6 +543,27 @@ async def run_once(account: Account, args: argparse.Namespace) -> None:
             LOG.info("Indexed %d clip(s) from disk", added)
 
 
+class UnknownEnumOnce(logging.Filter):
+    """pylitterbot warns, on the root logger, about each API value its enums don't know
+    (e.g. "Value 'OFF' not found in enum HopperStatus") every time it reads it, so every
+    sync. Let each value through once per run, so new ones still show up."""
+
+    MSG = "Value '%s' not found in enum %s"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: set[str] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg != self.MSG:
+            return True
+        key = record.getMessage()
+        if key in self.seen:
+            return False
+        self.seen.add(key)
+        return True
+
+
 async def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default="clips", help="output folder (default: ./clips)")
@@ -581,6 +602,7 @@ async def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format=lr_db.LOG_FORMAT,
     )
+    logging.getLogger().addFilter(UnknownEnumOnce())
     web = None
     if args.web:
         import web  # Flask is only loaded when the UI runs here
