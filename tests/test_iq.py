@@ -67,3 +67,19 @@ def test_hopper_low_and_disabled(env):
     assert lr_iq.forecasts(env.db, SERIAL)["hopper"]["state"] == "low"
     env.db.execute("UPDATE robots SET raw = '{\"state\": {\"isHopperInstalled\": false}}'")
     assert lr_iq.forecasts(env.db, SERIAL)["hopper"] is None
+
+
+def test_cycles_since_emptied_carry_on_across_a_counter_reset(env):
+    env.robot(info={"faults": [], "lifetime_cycles": 2112})
+    snapshot(env, 3 * DAY, drawer=80, cycles=2080)
+    snapshot(env, 2 * DAY, drawer=10, cycles=2090)   # emptied
+    snapshot(env, DAY, drawer=30, cycles=2105)       # lifetime counts, across a reset of Whisker's counter
+    env.db.commit()
+    assert lr_iq.forecasts(env.db, SERIAL)["drawer"]["cycles_since"] == 22  # up to the latest lifetime count
+
+
+def test_cycles_since_emptied_unknown_until_an_empty_is_seen(env):
+    env.robot(info={"faults": []})
+    snapshot(env, DAY, drawer=30, cycles=2105)
+    env.db.commit()
+    assert lr_iq.forecasts(env.db, SERIAL)["drawer"]["cycles_since"] is None

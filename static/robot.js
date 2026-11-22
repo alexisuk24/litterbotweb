@@ -65,7 +65,9 @@ function render() {
     ${ACTIONS.map(actionError).join('')}
   </div>` : ''}
   <div class="tiles">
-    ${tile('Waste drawer', pct(i.drawer_level), `${i.cycles_since_empty ?? '—'} cycles since emptied`, i.drawer_level, drawerWarn)}
+    ${tile('Waste drawer', pct(i.drawer_level),
+           d.iq?.drawer?.cycles_since != null ? `${d.iq.drawer.cycles_since} cycles since emptied` : 'not seen emptied yet',
+           i.drawer_level, drawerWarn)}
     ${tile('Litter level', pct(i.litter_level), titleCase(i.litter_state), i.litter_level, litterWarn)}
     ${tile('Last 24 hours', `${d.last_24h.visits} visits`, `${d.last_24h.cycles} clean cycles · last visit ${ago(d.last_visit)}`)}
     ${tile('Clean delay', i.wait_minutes != null ? `${i.wait_minutes} min` : '—', 'after a cat leaves')}

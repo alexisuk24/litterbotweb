@@ -401,7 +401,6 @@ def robot_info(robot: LitterRobot5) -> dict:
         "litter_state": getattr(level_state, "name", None),
         "hopper": _safe(lambda: robot.hopper_status_text),
         "drawer_level": _safe(lambda: robot.waste_drawer_level),
-        "cycles_since_empty": _safe(lambda: robot.cycle_count),
         "clean_cycles": clean_cycles(robot),  # set_robot_info adds lifetime_cycles from this
         "total_cycles": _safe(lambda: robot.odometer_empty_cycles),
         "filter_cycles": _safe(lambda: robot.odometer_filter_cycles),

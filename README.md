@@ -86,7 +86,7 @@ shows, but kept across container restarts.
 **Robots** has a page per robot: status, faults, waste drawer and litter levels,
 cycle counts, filter date, Wi-Fi and firmware, plus actions to start a clean cycle,
 reset the waste drawer gauge after emptying it, and remote-reset the robot (each asks
-for confirmation). **Total cycles** is the robot's clean-cycle count for all time: resetting
+for confirmation). The waste drawer tile counts clean cycles since the drawer was last seen emptied (a drop in its level between syncs), since neither Whisker nor the robot reports that. **Total cycles** is the robot's clean-cycle count for all time: resetting
 the counter in the Whisker app starts a new one here and adds it on, rather than losing the
 earlier cycles (counted from when this version of the app first ran). Firmware updates aren't possible from here; Whisker's LR5 API has no
 endpoint for them, so use the Whisker app. The firmware card shows each component's version and a history of
