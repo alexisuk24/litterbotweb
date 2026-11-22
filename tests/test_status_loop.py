@@ -108,7 +108,7 @@ def test_no_fast_path_before_the_first_backfill(env):
 
 
 def test_the_sync_loop_wakes_for_a_due_follow_up(env):
-    env.state(sync_interval=86400, refresh_requested=0,
+    env.state(sync_interval=86400, refresh_requested=0, sync_started=time.time(),
               **{"followup:LR5-TEST-1": json.dumps([time.time() + 0.3, time.time() + 600])})
 
     async def run():
