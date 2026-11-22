@@ -9,3 +9,13 @@ updates:
     commit-message:
       prefix: chore  # PR titles like "chore(deps): bump ...", to pass the PR rules check
       include: scope
+
+  # Keeps the Dockerfile's base images current.
+  - package-ecosystem: docker
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build  # base image updates are build changes (CONTRIBUTING.md)
+      include: scope

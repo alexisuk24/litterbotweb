@@ -17,7 +17,7 @@ jobs:
       - name: Check the title
         id: title
         continue-on-error: true
-        uses: amannn/action-semantic-pull-request@v6
+        uses: amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f  # v6.1.3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -70,7 +70,7 @@ jobs:
 
       - name: Explain what to fix
         if: steps.title.outcome == 'failure' || steps.branches.outcome == 'failure'
-        uses: marocchino/sticky-pull-request-comment@v3
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88  # v3.0.5
         with:
           header: pr-rules
           message: |
@@ -84,7 +84,7 @@ jobs:
 
       - name: Remove the comment once it's fixed
         if: steps.title.outcome == 'success' && steps.branches.outcome == 'success'
-        uses: marocchino/sticky-pull-request-comment@v3
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88  # v3.0.5
         with:
           header: pr-rules
           delete: true

@@ -135,6 +135,8 @@ every section:
   the "Install dependencies" step in `.github/workflows/tests.yml`. Change both together.
 - Downloaded files in the Dockerfile (ffmpeg, Chart.js) are pinned to a version and a
   `--checksum`. Update both when you upgrade one.
+- Actions in `.github/workflows/` are pinned to a full commit SHA, with the version in a
+  comment (`uses: actions/checkout@<sha>  # v7.0.1`). Dependabot updates both.
 
 **Security and privacy.** This repo is public, and the app holds your Whisker account
 and videos of your home.
