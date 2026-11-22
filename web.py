@@ -1587,13 +1587,11 @@ def _robot_dir(robot) -> Path:
     root = os.path.realpath(CLIPS)
     d = os.path.realpath(os.path.join(root, robot))
     # only folders directly inside the clips folder are robots ("..", "." and the like aren't)
-    if not d.startswith(root + os.sep):
-        abort(403)
-    if os.sep in d[len(root) + 1:]:
-        abort(403)
-    if not os.path.isdir(d):
+    if d.startswith(root + os.sep) and os.sep not in d[len(root) + 1:]:
+        if os.path.isdir(d):
+            return Path(d)
         abort(404)
-    return Path(d)
+    abort(403)
 
 
 @app.route("/api/dates/<robot>")
