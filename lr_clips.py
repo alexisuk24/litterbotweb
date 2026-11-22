@@ -947,19 +947,21 @@ FOLLOWUP_DELAYS = (60, 300, 900)
 
 def cycle_finished(db, robot) -> bool:
     """Whether the robot finished a clean cycle since we last looked: its cycle count (the
-    lifetime odometer, which goes up as the cycle ends) went up and it's no longer cycling.
+    clean-cycle odometer, which goes up as the cycle ends) went up and it's no longer cycling.
     The count is kept in the database so a restart doesn't count a cycle twice; the first
-    look, and a count that fell (say, a replaced robot), only record it."""
+    look only records it. A count that fell was reset in the Whisker app, so it counts
+    from 0 again: anything above 0 is a cycle since the reset."""
     count = _safe(lambda: robot.cycle_count)
     if count is None:
         return False
     key = f"cycle_count:{robot.serial}"
     seen = lr_db.get_state(db, key)
-    if seen is not None and count > int(seen) and _safe(lambda: robot.status) == LitterBoxStatus.CLEAN_CYCLE:
+    rose = seen is not None and count > (int(seen) if count >= int(seen) else 0)
+    if rose and _safe(lambda: robot.status) == LitterBoxStatus.CLEAN_CYCLE:
         return False  # wait for it to finish; the count isn't recorded until then
     lr_db.set_state(db, key, str(count))
     db.commit()
-    return seen is not None and count > int(seen)
+    return rose
 
 
 async def after_cycle(db, robot: LitterRobot5, args: argparse.Namespace) -> None:

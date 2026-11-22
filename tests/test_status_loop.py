@@ -30,8 +30,14 @@ def test_a_cycle_counts_once_it_finishes(env):
     assert lr_clips.cycle_finished(env.db, robot(11))
     assert not lr_clips.cycle_finished(env.db, robot(11))  # not again, including after a restart
     assert not lr_clips.cycle_finished(lr_db.connect(), robot(11))
-    assert not lr_clips.cycle_finished(env.db, robot(0))  # a count that fell (a replaced robot) starts again
+    assert not lr_clips.cycle_finished(env.db, robot(0))  # reset in the Whisker app
     assert lr_clips.cycle_finished(env.db, robot(1))
+
+
+def test_a_cycle_right_after_a_reset_still_counts(env):
+    lr_clips.cycle_finished(env.db, robot(2090))
+    assert lr_clips.cycle_finished(env.db, robot(1))  # reset, then a cycle, between two looks
+    assert not lr_clips.cycle_finished(env.db, robot(1))
 
 
 @pytest.fixture
