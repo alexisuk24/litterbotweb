@@ -1584,11 +1584,20 @@ def list_robots():
     return jsonify(sorted(p.name for p in CLIPS.iterdir() if p.is_dir()))
 
 
+def _robot_dir(robot) -> Path:
+    root = os.path.realpath(CLIPS)
+    d = os.path.realpath(os.path.join(root, robot))
+    # only folders directly inside the clips folder are robots ("..", "." and the like aren't)
+    if d.startswith(root + os.sep) and os.sep not in d[len(root) + 1:]:
+        if os.path.isdir(d):
+            return Path(d)
+        abort(404)
+    abort(403)
+
+
 @app.route("/api/dates/<robot>")
 def list_dates(robot):
-    d = CLIPS / robot
-    if not d.is_dir():
-        abort(404)
+    d = _robot_dir(robot)
     dates = set()
     for f in d.glob("*.mp4"):
         m = _DATE_RE.search(f.name)
@@ -1601,10 +1610,8 @@ def list_dates(robot):
 def list_videos(robot, date):
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
         abort(400)
-    d = CLIPS / robot
-    if not d.is_dir():
-        abort(404)
-    known = {r["video_file"]: r for r in db().execute(
+    d = _robot_dir(robot)
+    known ={r["video_file"]: r for r in db().execute(
         "SELECT * FROM clips WHERE robot_folder = ? AND video_file IS NOT NULL", (robot,))
         if f"_{date}_" in r["video_file"]}
     downloads = lr_db.clip_download_status(db(), [r["id"] for r in known.values()])
