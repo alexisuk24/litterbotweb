@@ -1,11 +1,13 @@
 """Settings API (sync schedule, retention, Whisker update counts) and the health check."""
 import asyncio
+import sqlite3
 import time
 
 import pytest
 
 import lr_clips
 import lr_db
+import web
 
 DAY = 86400
 
@@ -57,6 +59,17 @@ def test_health(env, state, status):
     env.state(sync_interval=3600, **{k: (now + v if k in ("sync_started", "sync_finished") else v)
                                      for k, v in state.items()})
     assert env.client.get("/api/health").status_code == status
+
+
+def test_health_keeps_database_errors_in_the_log(env, monkeypatch, caplog):
+    def broken():
+        raise sqlite3.OperationalError("unable to open database file /data/litterrobot.db")
+    monkeypatch.setattr(web, "db", broken)
+    resp = env.client.get("/api/health")
+    assert resp.status_code == 503
+    assert resp.get_json()["problem"].startswith("database:")
+    assert "/data/litterrobot.db" not in resp.get_data(as_text=True)
+    assert "/data/litterrobot.db" in caplog.text
 
 
 def test_health_follows_a_daily_schedule(env):
