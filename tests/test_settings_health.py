@@ -1,11 +1,13 @@
 """Settings API (sync schedule, retention, Whisker update counts) and the health check."""
 import asyncio
+import sqlite3
 import time
 
 import pytest
 
 import lr_clips
 import lr_db
+import web
 
 DAY = 86400
 
@@ -14,6 +16,14 @@ def test_sync_interval_setting(env):
     assert env.client.get("/api/settings").get_json()["sync_interval"] == 3600
     assert env.client.post("/api/settings", json={"sync_interval": 60}).status_code == 400
     assert env.client.post("/api/settings", json={"sync_interval": 86400}).get_json()["sync_interval"] == 86400
+
+
+def test_settings_page_shows_the_app_version(env, monkeypatch):
+    monkeypatch.setenv("APP_VERSION", "1.0.0-dev.7")
+    html = env.client.get("/settings").get_data(as_text=True)
+    assert "1.0.0-dev.7" in html and html.index("1.0.0-dev.7") < html.index("Whisker app")
+    monkeypatch.delenv("APP_VERSION")
+    assert ">dev<" in env.client.get("/settings").get_data(as_text=True)
 
 
 def test_collector_picks_up_a_shorter_interval_while_waiting(env, monkeypatch):
@@ -57,6 +67,17 @@ def test_health(env, state, status):
     env.state(sync_interval=3600, **{k: (now + v if k in ("sync_started", "sync_finished") else v)
                                      for k, v in state.items()})
     assert env.client.get("/api/health").status_code == status
+
+
+def test_health_keeps_database_errors_in_the_log(env, monkeypatch, caplog):
+    def broken():
+        raise sqlite3.OperationalError("unable to open database file /data/litterrobot.db")
+    monkeypatch.setattr(web, "db", broken)
+    resp = env.client.get("/api/health")
+    assert resp.status_code == 503
+    assert resp.get_json()["problem"].startswith("database:")
+    assert "/data/litterrobot.db" not in resp.get_data(as_text=True)
+    assert "/data/litterrobot.db" in caplog.text
 
 
 def test_health_follows_a_daily_schedule(env):

@@ -73,6 +73,10 @@ COPY templates /app/templates
 COPY static /app/static
 RUN chmod 755 /app/entrypoint.sh && chmod -R a+rX /app
 
+# Set by the Docker workflow (e.g. 0.3.0, or 0.3.0-dev.52 for a develop build).
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
 USER app
 # Unhealthy when the web UI stops answering or the sync loop is stuck (see /api/health).
 # With LR_WEB=0 there's no web server in this container to ask, so the check passes.

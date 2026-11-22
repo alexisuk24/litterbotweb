@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Keeps the workflows' actions current (e.g. ahead of runtime deprecations).
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore  # PR titles like "chore(deps): bump ...", to pass the PR rules check
+      include: scope
+
+  # Keeps the Dockerfile's base images current.
+  - package-ecosystem: docker
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build  # base image updates are build changes (CONTRIBUTING.md)
+      include: scope

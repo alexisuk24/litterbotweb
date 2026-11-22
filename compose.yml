@@ -1,6 +1,6 @@
 services:
   lr-clips:
-    image: alexisuk24/lr_video_downloader:latest
+    image: alexisuk24/litterbotweb:latest
     container_name: lr-clips
     restart: unless-stopped
     environment:

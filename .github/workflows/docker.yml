@@ -1,0 +1,137 @@
+name: Docker
+
+# develop: publishes a build of the next release (<version>-dev.<run>, plus "develop").
+# main: publishes a release (<version>, <major.minor>, "latest") and tags it in git.
+# VERSION holds major.minor; the patch number comes from the existing v* tags, so a
+# release PR that doesn't change VERSION is a patch release.
+on:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: alexisuk24/litterbotweb
+
+jobs:
+  test:
+    uses: ./.github/workflows/tests.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: dockerhub  # holds the Docker Hub secrets; only main and develop can use it
+    permissions:
+      contents: write  # to push the release tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # all tags, to find the next patch number
+
+      - name: Work out the version
+        id: version
+        run: |
+          base=$(tr -d '[:space:]' < VERSION)
+          if ! [[ $base =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=VERSION::VERSION must be major.minor (e.g. 0.3), got '$base'"
+            exit 1
+          fi
+          latest=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
+          if [ -n "$latest" ]; then
+            released=${latest#v}; released=${released%.*}
+            if [ "$(printf '%s\n%s\n' "$released" "$base" | sort -V | head -1)" != "$released" ]; then
+              echo "::error file=VERSION::VERSION $base is behind the latest release $latest"
+              exit 1
+            fi
+          fi
+
+          # A re-run of a release reuses its tag instead of bumping again.
+          version=$(git tag --points-at HEAD --list "v$base.*" --sort=-v:refname | head -1)
+          version=${version#v}
+          if [ -z "$version" ]; then
+            last=$(git tag --list "v$base.*" --sort=-v:refname | head -1)
+            if [ -n "$last" ]; then
+              version="$base.$(( ${last##*.} + 1 ))"
+            else
+              version="$base.0"
+            fi
+          fi
+
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE:$version,$IMAGE:$base,$IMAGE:latest" >> "$GITHUB_OUTPUT"
+          else
+            version="$version-dev.$GITHUB_RUN_NUMBER"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE:$version,$IMAGE:develop" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Building $version"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          pull: true
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: APP_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ steps.version.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag the release
+        if: github.ref_name == 'main'
+        env:
+          TAG: v${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "$(git tag --list "$TAG")" ]; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      # Removes the <version>-dev.N tags of this release and earlier ones; dev builds of a
+      # later version (develop already on the next minor during a hotfix) and the moving
+      # "develop" tag stay. The release itself is already published, so a failure here
+      # only leaves old dev tags behind.
+      - name: Delete the development builds this release replaces
+        if: github.ref_name == 'main'
+        continue-on-error: true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}  # needs Read, Write & Delete
+        run: |
+          token=$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' \
+            | curl -sSf -H 'Content-Type: application/json' -d @- https://hub.docker.com/v2/users/login \
+            | jq -r .token)
+          tags=""
+          url="https://hub.docker.com/v2/repositories/$IMAGE/tags?page_size=100"
+          while [ -n "$url" ] && [ "$url" != null ]; do
+            page=$(curl -sSf -H "Authorization: Bearer $token" "$url")
+            tags+=$(jq -r '.results[].name' <<< "$page")$'\n'
+            url=$(jq -r .next <<< "$page")
+          done
+          for tag in $tags; do
+            [[ $tag =~ ^([0-9]+\.[0-9]+\.[0-9]+)-dev\.[0-9]+$ ]] || continue
+            [ "$(printf '%s\n%s\n' "${BASH_REMATCH[1]}" "$VERSION" | sort -V | tail -1)" = "$VERSION" ] || continue
+            curl -sSf -X DELETE -H "Authorization: Bearer $token" \
+              "https://hub.docker.com/v2/repositories/$IMAGE/tags/$tag/"
+            echo "Deleted $tag"
+          done

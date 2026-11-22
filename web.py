@@ -164,7 +164,8 @@ def analysis_page():  # the Cats page's old address
 
 @app.route("/settings")
 def settings_page():
-    return render_template("settings.html", page="settings")
+    return render_template("settings.html", page="settings",
+                           version=os.environ.get("APP_VERSION", "dev"))
 
 
 @app.route("/robots")
@@ -378,8 +379,9 @@ def api_health():
     try:
         conn = db()
         conn.execute("SELECT 1").fetchone()
-    except Exception as err:
-        return jsonify(ok=False, problem=f"database: {err}"), 503
+    except Exception:
+        app.logger.exception("Health check: the database didn't open")
+        return jsonify(ok=False, problem="database: didn't open (details in the container log)"), 503
     started, finished = _fstate("sync_started"), _fstate("sync_finished")
     running = lr_db.get_state(conn, "sync_running") == "1"
     interval = lr_db.sync_interval(conn, int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
@@ -1583,11 +1585,20 @@ def list_robots():
     return jsonify(sorted(p.name for p in CLIPS.iterdir() if p.is_dir()))
 
 
+def _robot_dir(robot) -> Path:
+    root = os.path.realpath(CLIPS)
+    d = os.path.realpath(os.path.join(root, robot))
+    # only folders directly inside the clips folder are robots ("..", "." and the like aren't)
+    if d.startswith(root + os.sep) and os.sep not in d[len(root) + 1:]:
+        if os.path.isdir(d):
+            return Path(d)
+        abort(404)
+    abort(403)
+
+
 @app.route("/api/dates/<robot>")
 def list_dates(robot):
-    d = CLIPS / robot
-    if not d.is_dir():
-        abort(404)
+    d = _robot_dir(robot)
     dates = set()
     for f in d.glob("*.mp4"):
         m = _DATE_RE.search(f.name)
@@ -1600,10 +1611,8 @@ def list_dates(robot):
 def list_videos(robot, date):
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
         abort(400)
-    d = CLIPS / robot
-    if not d.is_dir():
-        abort(404)
-    known = {r["video_file"]: r for r in db().execute(
+    d = _robot_dir(robot)
+    known ={r["video_file"]: r for r in db().execute(
         "SELECT * FROM clips WHERE robot_folder = ? AND video_file IS NOT NULL", (robot,))
         if f"_{date}_" in r["video_file"]}
     downloads = lr_db.clip_download_status(db(), [r["id"] for r in known.values()])
