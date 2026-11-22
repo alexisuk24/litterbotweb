@@ -128,3 +128,15 @@ def test_the_follow_up_lists_only_the_newest_clips():
     assert asked == [None]
     asyncio.run(lr_clips.list_clips(r, 7, "UTC"))
     assert len(asked) == 1 + 1 + 9  # the newest, then each day of the window
+
+
+def test_new_activities_are_logged_with_how_late_they_were_listed(env, caplog):
+    env.robot()
+    items = [{"messageId": "m1", "type": "PET_VISIT", "timestamp": time.time() - 540, "petWeight": 950},
+             {"messageId": "m2", "type": "CYCLE_COMPLETED", "timestamp": time.time() - 20}]
+    with caplog.at_level("INFO", logger="lr_clips"):
+        asyncio.run(lr_clips.fetch_new_activities(env.db, robot(11, activities=items), "clean cycle finished"))
+        asyncio.run(lr_clips.fetch_new_activities(env.db, robot(11, activities=items), "follow-up"))
+    lines = [r.getMessage() for r in caplog.records]
+    assert len(lines) == 1  # nothing new at the follow-up, so nothing logged
+    assert "PET_VISIT from 54" in lines[0] and "CYCLE_COMPLETED from 2" in lines[0]

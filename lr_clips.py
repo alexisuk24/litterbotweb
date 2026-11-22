@@ -964,13 +964,27 @@ def cycle_finished(db, robot) -> bool:
     return rose
 
 
+async def fetch_new_activities(db, robot: LitterRobot5, when: str) -> int:
+    """Fetch the newest page of the robot's activity log, logging each new entry with how long
+    after its own time it was listed; that timing is what the status loop's delays rest on."""
+    recent = "SELECT id, type, ts FROM activities WHERE robot_serial = ? AND ts > ?"
+    since = time.time() - 6 * 3600
+    before = {r["id"] for r in db.execute(recent, (robot.serial, since))}
+    new = await sync_activities(db, robot, 1)
+    now = time.time()
+    found = [f"{r['type']} from {now - r['ts']:.0f}s ago"
+             for r in db.execute(recent + " ORDER BY ts", (robot.serial, since)) if r["id"] not in before]
+    if found or when == "clean cycle finished":
+        LOG.info("%s: %s; new activities: %s", robot.name, when, ", ".join(found) or "none yet")
+    return new
+
+
 async def after_cycle(db, robot: LitterRobot5, args: argparse.Namespace) -> None:
     """A clean cycle just finished: fetch the visit now, and schedule a look for its camera
     detection and clip once Whisker has had time to process them."""
     if lr_db.get_state(db, f"activities_backfilled:{robot.serial}") != "1":
         return  # the first sync is still backfilling the activity log; it'll fetch this visit too
-    new = await sync_activities(db, robot, 1)
-    LOG.info("%s: clean cycle finished; %d new activit%s", robot.name, new, "y" if new == 1 else "ies")
+    await fetch_new_activities(db, robot, "clean cycle finished")
     try:
         await asyncio.to_thread(notify_visits, args.db, robot.serial)
     except Exception:
@@ -996,6 +1010,7 @@ async def status_watcher(args: argparse.Namespace, account: Account, interval: f
     or so. Backs off while Whisker fails, as pylitterbot's own polling does."""
     db = lr_db.connect(args.db)
     delay = interval
+    last_status: dict[str, object] = {}
     while True:
         await asyncio.sleep(delay + random.uniform(0, interval / 10))
         robots = [r for r in account.robots if isinstance(r, LitterRobot5)]  # empty until the first login
@@ -1005,8 +1020,18 @@ async def status_watcher(args: argparse.Namespace, account: Account, interval: f
                 await robot.refresh()
                 lr_db.set_robot_info(db, robot.serial, robot_info(robot))
                 db.commit()
+                status = _safe(lambda: robot.status)
+                if robot.serial in last_status and status != last_status[robot.serial]:
+                    LOG.info("%s: status %s -> %s", robot.name, getattr(last_status[robot.serial], "name", None),
+                             getattr(status, "name", None))
+                last_status[robot.serial] = status
                 if cycle_finished(db, robot):
                     await after_cycle(db, robot, args)
+                elif (status == LitterBoxStatus.CAT_DETECTED
+                      and lr_db.get_state(db, f"activities_backfilled:{robot.serial}") == "1"):
+                    # not acted on yet: finds out whether Whisker lists a visit before the robot's
+                    # cycle delay ends, which would let the visit be fetched minutes sooner
+                    await fetch_new_activities(db, robot, "cat detected, waiting to cycle")
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -1046,7 +1071,7 @@ async def run_followups(account: Account, args: argparse.Namespace) -> None:
         if not robot:
             continue
         try:
-            await sync_activities(db, robot, 1)  # the visit may not have been listed yet, or rematched since
+            await fetch_new_activities(db, robot, "follow-up")  # the visit may not have been listed yet
             await asyncio.to_thread(notify_visits, args.db, robot.serial)  # sends only visits not sent yet
             events = await robot.get_camera_client().get_events(limit=50)
             found = lr_db.upsert_detections(db, robot.serial, events)
