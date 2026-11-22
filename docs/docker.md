@@ -105,6 +105,7 @@ most likely to set:
 | `LR_USERNAME` / `LR_PASSWORD` | (required) | Your Whisker account |
 | `TZ` | `UTC` | The container's timezone, for logs and the sync schedule |
 | `LR_DOWNLOAD_INTERVAL` | `3600` | Seconds between syncs, until a schedule is picked in Settings |
+| `LR_STATUS_INTERVAL` | `60` | Seconds between robot status checks, to fetch a visit soon after its clean cycle (`0` = off) |
 | `LR_RETENTION_DAYS` | `14` | Days to keep clips at full quality, until set in Settings (`0` keeps everything) |
 | `LR_HWACCEL` | `auto` | Encoder for clips that switch cameras: `auto`, `vaapi` or `off` (CPU) |
 | `LR_WEB` | `1` | `0` runs the collector without the web UI |
