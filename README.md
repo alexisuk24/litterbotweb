@@ -254,7 +254,8 @@ major.minor: raise it (in the release PR or earlier on `develop`) for a minor or
 release, or leave it for a patch release (`0.3.1`, `0.3.2`, ...). Hotfixes go from a branch
 off `main` straight to `main`; merge `main` back into `develop` afterwards. The workflow
 needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repo secrets; the running version is
-in the image's `APP_VERSION` env var and `org.opencontainers.image.version` label.
+shown at the top of the Settings page and is in the image's `APP_VERSION` env var and
+`org.opencontainers.image.version` label.
 
 Publishing the image by hand (with the SBOM and provenance attestations Docker Scout
 checks for). `latest` includes the VAAPI drivers for both Intel (`intel`) and AMD (`mesa`) GPUs:
