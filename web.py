@@ -164,7 +164,8 @@ def analysis_page():  # the Cats page's old address
 
 @app.route("/settings")
 def settings_page():
-    return render_template("settings.html", page="settings")
+    return render_template("settings.html", page="settings",
+                           version=os.environ.get("APP_VERSION", "dev"))
 
 
 @app.route("/robots")
