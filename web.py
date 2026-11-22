@@ -1587,7 +1587,9 @@ def _robot_dir(robot) -> Path:
     root = os.path.realpath(CLIPS)
     d = os.path.realpath(os.path.join(root, robot))
     # only folders directly inside the clips folder are robots ("..", "." and the like aren't)
-    if not d.startswith(root + os.sep) or os.sep in d[len(root) + 1:]:
+    if not d.startswith(root + os.sep):
+        abort(403)
+    if os.sep in d[len(root) + 1:]:
         abort(403)
     if not os.path.isdir(d):
         abort(404)
