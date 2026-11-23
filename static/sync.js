@@ -29,11 +29,64 @@
     else if (st.updated) text = `Updated ${ago(now() - st.updated)}`;
     label.textContent = text;
     label.className = cls;
-    const at = t => new Date(t * 1000).toLocaleString();
-    label.title = st.error || [st.updated && `New data fetched ${at(st.updated)}`,
-      st.finished && `Last full sync ${at(st.finished)}`].filter(Boolean).join('\n');
+    label.title = 'Show what was updated when';
     paintRetention();
+    paintDetails();
   }
+
+  // Tapping the status opens a breakdown of each kind of update and when it last ran.
+  label.setAttribute('role', 'button');
+  label.tabIndex = 0;
+  let details = null;
+  const clock = t => {
+    const d = new Date(t * 1000);
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`;
+  };
+  const rel = t => t > now() ? `in ${ago(t - now()).replace(' ago', '').replace('just now', 'under a minute')}` : ago(now() - t);
+  const TRIGGERS = { scheduled: 'on schedule', manual: 'from Refresh', startup: 'at startup' };
+
+  function detailRows() {
+    const rows = [];
+    const row = (what, t, note, cls) => rows.push({ what, when: t ? `${rel(t)} · ${clock(t)}` : 'not yet', note, cls });
+    row('Robot status', st.status_checked, 'Checked about every minute, to catch each clean cycle as it ends');
+    row('New visits and clips', st.data_updated, 'Fetched right after each clean cycle, then again a few minutes later for clips and cat detections');
+    if (st.running) rows.push({ what: 'Full sync', when: `running since ${clock(st.started)}`, note: 'Everything: activity, clips, pets and settings' });
+    else row('Last full sync', st.finished, st.error ? `Failed: ${st.error}` : `Everything: activity, clips, pets and settings${TRIGGERS[st.trigger] ? ` (${TRIGGERS[st.trigger]})` : ''}`, st.error ? 'err' : '');
+    if (st.next_sync && !st.running) row('Next full sync', Math.max(st.next_sync, now()), 'Or sooner with Refresh, or by pulling down on a phone');
+    return rows;
+  }
+
+  function paintDetails() {
+    if (!details || !details.open) return;
+    const list = details.querySelector('dl');
+    list.replaceChildren(...detailRows().flatMap(r => {
+      const dt = document.createElement('dt'), dd = document.createElement('dd'), note = document.createElement('div');
+      dt.textContent = r.what;
+      dd.textContent = r.when;
+      note.textContent = r.note;
+      note.className = `note ${r.cls || ''}`;
+      dd.append(note);
+      return [dt, dd];
+    }));
+  }
+
+  function openDetails() {
+    if (!st) return;
+    if (!details) {
+      details = document.createElement('dialog');
+      details.className = 'confirm sync-details';
+      details.setAttribute('aria-labelledby', 'syncDetailsTitle');
+      details.innerHTML = '<form method="dialog"><h3 id="syncDetailsTitle">Updates</h3><dl></dl>'
+        + '<div class="btns"><button class="btn">Close</button></div></form>';
+      details.addEventListener('click', e => { if (e.target === details) details.close(); });  // tap outside
+      document.body.appendChild(details);
+    }
+    details.showModal();
+    paintDetails();
+  }
+  label.addEventListener('click', openDetails);
+  label.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetails(); } });
 
   function paintRetention() {
     const r = st.retention || {};

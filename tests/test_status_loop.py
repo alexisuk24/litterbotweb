@@ -152,3 +152,15 @@ def test_updated_counts_from_data_fetched_between_full_syncs(env):
     asyncio.run(lr_clips.after_cycle(env.db, robot(11), argparse.Namespace(db=str(lr_db.DB_PATH))))
     st = env.client.get("/api/sync").get_json()
     assert st["updated"] > time.time() - 5 and st["finished"] < time.time() - 3000
+
+
+def test_the_sync_status_breaks_down_each_kind_of_update(env):
+    started = time.time() - 600
+    env.state(sync_interval=3600, sync_started=started, sync_finished=started + 60, data_updated=time.time() - 30)
+    env.robot()
+    lr_db.set_robot_info(env.db, "LR5-TEST-1", {})
+    env.db.commit()
+    st = env.client.get("/api/sync").get_json()
+    assert st["data_updated"] == st["updated"] > st["finished"]
+    assert st["status_checked"] > time.time() - 5
+    assert st["next_sync"] == pytest.approx(started + 3600)
