@@ -35,6 +35,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sync-btn:disabled { opacity: .55; cursor: default; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 380px) { .sync #syncStatus { display: none; } }
+/* pull to refresh (sync.js): starts hidden just above the top edge and follows the finger */
+html { overscroll-behavior-y: contain; }  /* ours replaces the browser's own */
+.ptr { position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) - 2.4rem); z-index: 50; width: 2.4rem; height: 2.4rem; border-radius: 50%; background: var(--surface2); border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(0,0,0,.35); color: var(--muted); display: grid; place-items: center; pointer-events: none; opacity: 0; transform: translate(-50%, 0); }
+.ptr svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.ptr.armed, .ptr.spin { color: var(--accent); }
+.ptr.spin svg { animation: spin 1s linear infinite; }
+.ptr.spin, .ptr.done { transition: transform .2s ease, opacity .2s ease; }
 .retention-note { background: var(--warn-bg); color: var(--warn); font-size: .82rem; padding: .5rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: .75rem; }
 .retention-note span { flex: 1; }
 .retention-note button { background: none; border: 0; color: inherit; font-size: 1.1rem; line-height: 1; cursor: pointer; padding: .2rem .35rem; opacity: .8; }

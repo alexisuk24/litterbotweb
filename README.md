@@ -138,7 +138,9 @@ fetched sooner). The scheduled sync still catches anything this misses. Set
 
 **Refresh** (top right on every page) runs a sync immediately instead of waiting for
 the next scheduled one. It's disabled while a sync is running and for 5 seconds after
-one finishes.
+one finishes. On a phone, pull down from the top of a page to do the same. The
+"Updated … ago" beside it counts from the newest data fetched, whether by a full sync or
+by the fetches after a clean cycle; hover it to see when the last full sync ran.
 
 **Retention** (Settings > Clips) works in three steps. Clips stay **full quality** as
 downloaded for a number of days (14 by default, from `LR_RETENTION_DAYS`). After that
