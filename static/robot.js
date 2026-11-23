@@ -24,11 +24,6 @@ const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { weekday: 'short
 const pct = v => v == null ? '—' : `${Math.round(v)}%`;
 // UPDATE_SUCCESSFUL, UpdateSuccessful and OPTIMAL all become "Update successful" / "Optimal"
 const titleCase = t => t ? t.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : '—';
-function wifi(rssi) {
-  if (rssi == null) return ['—', ''];
-  const q = rssi >= -60 ? 'Excellent' : rssi >= -70 ? 'Good' : rssi >= -80 ? 'Fair' : 'Weak';
-  return [q, `${rssi} dBm`];
-}
 const busy = c => c && (c.status === 'pending' || c.status === 'sending');
 
 // ---------------------------------------------------------------- render
@@ -45,7 +40,6 @@ function render() {
   const stateCls = i.online ? 'ok' : 'warn';
   const stateText = !i.online ? 'Offline' : (i.status || 'Unknown');
   const refreshing = busy(d.latest.refresh);
-  const [wq, wd] = wifi(i.wifi_rssi);
   const drawerWarn = (i.drawer_level ?? 0) >= 80;
   const litterWarn = ['LOW', 'EMPTY', 'REFILL'].includes(i.litter_state);
 
@@ -76,8 +70,6 @@ function render() {
            i.clean_cycles != null && i.clean_cycles !== i.lifetime_cycles
              ? `${i.clean_cycles.toLocaleString()} since the counter was reset in the Whisker app`
              : 'clean cycles, all time')}
-    ${tile('Wi-Fi', wq, wd)}
-    ${tile('Last seen', ago(i.last_seen), when(i.last_seen))}
   </div>`, `
       ${iqCard(d.iq)}
       <div class="card panel">
