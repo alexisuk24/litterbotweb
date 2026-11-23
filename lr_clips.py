@@ -1009,12 +1009,20 @@ async def fetch_new_activities(db, robot: LitterRobot5, when: str) -> int:
     return new
 
 
+def mark_updated(db) -> None:
+    """Record that new data was fetched between full syncs (after a clean cycle, or in a
+    follow-up), so the web UI's "Updated … ago" counts from it and its pages reload."""
+    lr_db.set_state(db, "data_updated", str(time.time()))
+    db.commit()
+
+
 async def after_cycle(db, robot: LitterRobot5, args: argparse.Namespace) -> None:
     """A clean cycle just finished: fetch the visit now, and schedule a look for its camera
     detection and clip once Whisker has had time to process them."""
     if lr_db.get_state(db, f"activities_backfilled:{robot.serial}") != "1":
         return  # the first sync is still backfilling the activity log; it'll fetch this visit too
     await fetch_new_activities(db, robot, "clean cycle finished")
+    mark_updated(db)
     try:
         await asyncio.to_thread(notify_visits, args.db, robot.serial)
     except Exception:
@@ -1110,6 +1118,7 @@ async def run_followups(account: Account, args: argparse.Namespace) -> None:
                 got, failed = await process_robot(robot, http, args, latest_only=True)
             LOG.info("%s: follow-up: %d new camera detection(s), %d new clip(s), %d failed",
                      robot.name, found, got, failed)
+            mark_updated(db)
         except Exception:
             LOG.exception("%s: follow-up failed", robot.name)
 

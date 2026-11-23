@@ -141,3 +141,26 @@ def test_new_activities_are_logged_with_how_late_they_were_listed(env, caplog):
     lines = [r.getMessage() for r in caplog.records]
     assert len(lines) == 1  # nothing new at the follow-up, so nothing logged
     assert "PET_VISIT from 54" in lines[0] and "CYCLE_COMPLETED from 2" in lines[0]
+
+
+def test_updated_counts_from_data_fetched_between_full_syncs(env):
+    env.state(sync_started=time.time() - 3300, sync_finished=time.time() - 3240)
+    st = env.client.get("/api/sync").get_json()
+    assert st["updated"] == st["finished"]  # only the hourly sync so far
+    env.robot()
+    env.state(**{"activities_backfilled:LR5-TEST-1": 1})
+    asyncio.run(lr_clips.after_cycle(env.db, robot(11), argparse.Namespace(db=str(lr_db.DB_PATH))))
+    st = env.client.get("/api/sync").get_json()
+    assert st["updated"] > time.time() - 5 and st["finished"] < time.time() - 3000
+
+
+def test_the_sync_status_breaks_down_each_kind_of_update(env):
+    started = time.time() - 600
+    env.state(sync_interval=3600, sync_started=started, sync_finished=started + 60, data_updated=time.time() - 30)
+    env.robot()
+    lr_db.set_robot_info(env.db, "LR5-TEST-1", {})
+    env.db.commit()
+    st = env.client.get("/api/sync").get_json()
+    assert st["data_updated"] == st["updated"] > st["finished"]
+    assert st["status_checked"] > time.time() - 5
+    assert st["next_sync"] == pytest.approx(started + 3600)

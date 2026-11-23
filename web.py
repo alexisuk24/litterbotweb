@@ -361,8 +361,14 @@ def sync_status():
     running = lr_db.get_state(db(), "sync_running") == "1" and now - started < STALE_RUN_S
     pending = requested > started
     cooldown = max(0.0, REFRESH_COOLDOWN_S - (now - finished)) if finished else 0.0
+    # data also arrives between full syncs: after each clean cycle and in its follow-ups
+    updated = max(finished, _fstate("data_updated"))
     return {
         "running": running, "pending": pending, "started": started or None, "finished": finished or None,
+        "updated": updated or None, "data_updated": _fstate("data_updated") or None,
+        "status_checked": db().execute("SELECT MAX(info_at) FROM robots").fetchone()[0],
+        "next_sync": started + lr_db.sync_interval(db(), int(os.environ.get("LR_DOWNLOAD_INTERVAL", "3600")))
+        if started else None,
         "trigger": lr_db.get_state(db(), "sync_trigger"), "error": lr_db.get_state(db(), "sync_error") or None,
         "cooldown": round(cooldown, 2), "can_refresh": not running and not pending and cooldown == 0,
         "collector_seen": bool(started), "retention": retention_info(), "now": now,
