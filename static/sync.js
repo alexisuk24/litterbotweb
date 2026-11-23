@@ -71,6 +71,7 @@
     }));
   }
 
+  let byKeyboard = false;
   function openDetails() {
     if (!st) return;
     if (!details) {
@@ -80,13 +81,17 @@
       details.innerHTML = '<form method="dialog"><h3 id="syncDetailsTitle">Updates</h3><dl></dl>'
         + '<div class="btns"><button class="btn">Close</button></div></form>';
       details.addEventListener('click', e => { if (e.target === details) details.close(); });  // tap outside
+      // closing hands focus back to the label; after a tap that leaves Safari's focus ring on it
+      details.addEventListener('close', () => { if (!byKeyboard) label.blur(); });
       document.body.appendChild(details);
     }
     details.showModal();
     paintDetails();
   }
-  label.addEventListener('click', openDetails);
-  label.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetails(); } });
+  label.addEventListener('click', () => { byKeyboard = false; openDetails(); });
+  label.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); byKeyboard = true; openDetails(); }
+  });
 
   function paintRetention() {
     const r = st.retention || {};
